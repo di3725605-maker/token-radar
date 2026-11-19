@@ -1,9 +1,11 @@
 // Token Radar's entry program (Node 22, standard library only).
 //
-// The program reads the sealed snapshot from /input/snapshot.json (or --input <file|dir>), scores
-// every pre-token protocol with the calibrated model in lib/model.ts, writes the ranked board to
-// /output/board.json, and copies this repository's dashboard/ and screenshots/ to /output. Last,
-// it writes /output/dossier.json, the summary the judge reads, with the vendored make.fun library.
+// The program reads the sealed snapshot from /input/snapshot.json (or --input <file|dir>), fits
+// the radar-3 model on the snapshot's own traded tokens (lib/model.ts), validates it by
+// leave-one-out, walk-forward and bootstrap (lib/validate.ts), scores every pre-token protocol
+// into the ranked board, writes the board to /output/board.json, and copies this repository's
+// dashboard/ and screenshots/ to /output. Last, it writes /output/dossier.json, the summary
+// the judge reads, with the vendored make.fun library.
 //
 // The dashboard is a static page, no framework and no network: dashboard/index.html, dashboard/app.css
 // and dashboard/app.js read /output/data.js, which this program writes from the same board.
@@ -14,7 +16,8 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { boardIssue, buildRadar, dataScript, parseSnapshot } from './lib/model.ts';
+import { boardIssue, buildBoard, buildLedger, categoryRatesTable, compSet, dataScript, fitModel, parseSnapshot, MODEL_VERSION, type RadarData } from './lib/model.ts';
+import { validateModel } from './lib/validate.ts';
 import { verifyBoard, verifyWritten } from './lib/verify.ts';
 import { buildDossier } from './vendor/makefun-board.ts';
 
@@ -42,7 +45,23 @@ if (!existsSync(inputFile)) {
 const out = arg('output', process.env.MAKEFUN_OUTPUT_DIR ?? '/output');
 
 const snapshot = parseSnapshot(readFileSync(inputFile, 'utf8'));
-const { board, radar } = buildRadar(snapshot);
+
+// Fit the model on the snapshot's own traded tokens, then validate it before anything is
+// scored: the band factors and the rank ranges come from the validation, not from a constant.
+const fitted0 = fitModel(snapshot);
+const validation = validateModel(snapshot, fitted0);
+const fitted = { ...fitted0, band25: validation.band25, band90: validation.band90 };
+
+// The fitted curve must reproduce the independent fit in the fit report (value = 6220.36 *
+// TVL^0.4453 on the sealed snapshot). A large drift means the fit or the comp set changed.
+if (Math.abs(fitted.curve.a - 6220.36) / 6220.36 > 0.02 || Math.abs(fitted.curve.b - 0.4453) > 0.01) {
+  process.stderr.write(
+    `token radar: the fitted curve drifted from the fit report: A=${fitted.curve.a.toFixed(2)}, b=${fitted.curve.b.toFixed(4)} (expected A=6220.36, b=0.4453)\n`,
+  );
+  process.exit(1);
+}
+
+const { board, live } = buildBoard(snapshot, fitted, validation.ranges);
 const issue = boardIssue(board, snapshot);
 if (issue !== null) {
   process.stderr.write(`token radar: the model wrote a board the gate refuses: ${issue}\n`);
@@ -56,6 +75,34 @@ if (verifyIssue !== null) {
   process.stderr.write(`token radar: the board failed its own verification: ${verifyIssue}\n`);
   process.exit(1);
 }
+
+const radar: RadarData = {
+  as_of: snapshot.as_of,
+  source: snapshot.source,
+  floor_usd: snapshot.floor_usd,
+  model_version: MODEL_VERSION,
+  watchlist_size: snapshot.watchlist.length,
+  board_size: board.length,
+  found_size: board.filter((r) => r.list === 'found').length,
+  early_size: board.filter((r) => r.list === 'early').length,
+  live_size: live.length,
+  total_implied_usd: board.reduce((s, r) => s + r.implied_value_usd, 0),
+  curve_a: fitted.curve.a,
+  curve_b: fitted.curve.b,
+  odds_overall: fitted.odds.overall,
+  odds_bucket_rates: fitted.odds.bucketRates,
+  odds_exponent: fitted.odds.exponent,
+  band25: fitted.band25,
+  band90: fitted.band90,
+  validation: validation.summary,
+  ablation: validation.ablation,
+  odds_bakeoff: validation.oddsBakeoff,
+  ledger: buildLedger(snapshot, board),
+  comps: compSet(snapshot).map((p) => ({ slug: p.slug, name: p.name, tvl_usd: p.tvl_usd, mcap_usd: p.mcap_usd! })),
+  odds_categories: categoryRatesTable(snapshot),
+  rows: board,
+  live,
+};
 
 mkdirSync(out, { recursive: true });
 writeFileSync(join(out, 'board.json'), `${JSON.stringify({ rows: board })}\n`);
@@ -100,7 +147,10 @@ if (writtenIssue !== null) {
   process.exit(1);
 }
 
+const top = board[0]!;
 process.stdout.write(
-  `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows scored (${radar.early_size} early, ${radar.live_size} live set aside)\n` +
+  `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows scored (${radar.early_size} early, ${radar.found_size} found, ${radar.live_size} live set aside)\n` +
+    `token radar: model ${MODEL_VERSION}: value = ${fitted.curve.a.toFixed(2)} * TVL^${fitted.curve.b.toFixed(4)} on ${validation.summary.comps} comps (R2 ${validation.summary.rSquared.toFixed(3)}), LOO x${validation.summary.looMedianMiss.toFixed(2)}, walk-forward x${validation.summary.walkForward50.toFixed(2)}, bands x${fitted.band25.toFixed(2)}/x${fitted.band90.toFixed(2)}\n` +
+    `token radar: top ${top.name} $${top.implied_value_usd.toLocaleString('en-US')}, board total $${radar.total_implied_usd.toLocaleString('en-US')}\n` +
     `token radar: wrote ${join(out, 'board.json')}, ${join(out, 'data.js')}, ${join(out, 'dashboard')} (3 files), ${join(out, 'screenshots')} (${shots.length} images) and ${join(out, 'dossier.json')}\n`,
 );

@@ -141,3 +141,38 @@ tbody tr[data-selected="true"] { background: color-mix(in srgb, var(--accent) 8%
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; }
 }
+
+/* radar-3 additions: KPI strip, verdict badges, scatter, method tables, ledger, audit line. */
+.kpis { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--step-2); align-content: start; border-left: 1px solid var(--border); padding-left: var(--step-5); }
+.kpi { display: flex; flex-direction: column; gap: 2px; }
+.kpi b { font-family: var(--font-num); font-size: 14px; font-weight: 500; }
+.kpi span { color: var(--muted); font-size: 12px; }
+
+.verdict { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; letter-spacing: 0.02em; white-space: nowrap; }
+.verdict.is-farm { background: #dcefe7; color: var(--accent); }
+.verdict.is-thin { background: #fdf3d7; color: #8a6d1b; }
+.verdict.is-skip { background: #e8eeeb; color: var(--muted); }
+
+.rank-cell { display: grid; gap: 1px; }
+.rank-cell b { font-weight: 600; }
+.rank-cell .sub { font-size: 11px; }
+
+.scatter { margin-bottom: var(--step-4); padding: var(--step-4); }
+.scatter svg { display: block; width: 100%; height: auto; }
+
+.method { margin-top: 0; padding: var(--step-5); display: grid; gap: var(--step-3); }
+.method h3 { margin-top: var(--step-4); }
+.method .table-wrap { max-height: 420px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius-control); }
+.method .table-wrap thead th { position: sticky; top: 0; background: var(--surface); z-index: 1; }
+.method td, .method th { padding: 8px 12px; }
+.two-col { display: grid; grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr); gap: var(--step-4); align-items: start; }
+.two-col .table-wrap { max-height: 320px; }
+.tall .table-wrap { max-height: 320px; }
+
+.comps td, .comps th { padding: 8px 12px; font-size: 13px; }
+.audit { margin-top: var(--step-5); padding-top: var(--step-4); border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; line-height: 1.6; }
+
+@media (max-width: 900px) {
+  .kpis { grid-template-columns: 1fr 1fr; border-left: 0; border-top: 1px solid var(--border); padding-left: 0; padding-top: var(--step-4); }
+  .two-col { grid-template-columns: 1fr; }
+}
