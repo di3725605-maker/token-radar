@@ -15,6 +15,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSyn
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { boardIssue, buildRadar, dataScript, parseSnapshot } from './lib/model.ts';
+import { verifyBoard, verifyWritten } from './lib/verify.ts';
 import { buildDossier } from './vendor/makefun-board.ts';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
@@ -45,6 +46,14 @@ const { board, radar } = buildRadar(snapshot);
 const issue = boardIssue(board, snapshot);
 if (issue !== null) {
   process.stderr.write(`token radar: the model wrote a board the gate refuses: ${issue}\n`);
+  process.exit(1);
+}
+
+// The board's own verification: slug reality and uniqueness, size, trimmed
+// steps, ages and the value cap. A board that fails here never reaches disk.
+const verifyIssue = verifyBoard(board, snapshot);
+if (verifyIssue !== null) {
+  process.stderr.write(`token radar: the board failed its own verification: ${verifyIssue}\n`);
   process.exit(1);
 }
 
@@ -82,6 +91,14 @@ for (const name of shots) {
 
 // The dossier is written last: the scorer rebuilds it from this /output and compares bytes.
 writeFileSync(join(out, 'dossier.json'), buildDossier(out, { text_max_bytes: TEXT_MAX_BYTES, screenshots: SCREENSHOT_CAPS, dashboard: { max_files: 400, max_bytes: 4_194_304 } }));
+
+// The written output is verified after writing: the files landed, parse, and
+// match the board. A partial or mismatched write fails here, not on the server.
+const writtenIssue = verifyWritten(out, board);
+if (writtenIssue !== null) {
+  process.stderr.write(`token radar: the written output failed verification: ${writtenIssue}\n`);
+  process.exit(1);
+}
 
 process.stdout.write(
   `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows scored (${radar.early_size} early, ${radar.live_size} live set aside)\n` +

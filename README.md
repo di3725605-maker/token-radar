@@ -4,7 +4,7 @@
 [![rank](https://make.fun/badge/token-radar-01/di3725605-maker/token-radar/rank.svg)](https://make.fun/competitions/token-radar-01)
 [![reward](https://make.fun/badge/token-radar-01/di3725605-maker/token-radar/reward.svg)](https://make.fun/competitions/token-radar-01)
 
-A token launch radar for the [token-radar-01](https://make.fun/competitions/token-radar-01) bounty on make.fun: it reads a frozen DefiLlama protocol snapshot, ranks every pre-token protocol by implied value, and writes a dashboard with a concrete farm plan for each one.
+A token launch radar for the [token-radar-01](https://make.fun/competitions/token-radar-01) bounty on make.fun: it reads a frozen DefiLlama protocol snapshot, ranks every pre-token protocol by implied value, and writes a dashboard with a concrete farm plan for each one. Bounty page: https://make.fun/bounty/token-radar-01
 
 ## What it answers
 
@@ -29,8 +29,10 @@ Each board row carries six steps with a cost and a time: a fresh wallet, the cat
 Node 22, standard library only, no install:
 
 ```sh
-node main.ts --input input/snapshot.json
+node main.ts --input /path/to/snapshot.json
 ```
+
+The grader mounts the sealed snapshot at `/input/snapshot.json`, so no `--input` is needed there: locally, point `--input` at the kit's copy of the snapshot.
 
 It writes `/output/board.json` (the ranked board), `/output/data.js` (the dashboard's data), copies `dashboard/` and `screenshots/` to `/output`, and writes `/output/dossier.json` with the vendored make.fun library. Set `MAKEFUN_OUTPUT_DIR` to choose the output directory.
 
@@ -41,4 +43,6 @@ It writes `/output/board.json` (the ranked board), `/output/data.js` (the dashbo
 - `dashboard/` — the page: `index.html`, `app.css`, `app.js`. It recomputes every row from the snapshot figures and checks the number the board carries.
 - `screenshots/` — the board, a detail view and a filtered view of the dashboard.
 - `vendor/makefun-board.ts` — make.fun's dashboard-dossier library, byte for byte the kit's copy.
-- `input/snapshot.json` — the sealed DefiLlama snapshot (758 protocols, as of 2026-11-14), read-only.
+- `lib/verify.ts` — independent verification: the board's slugs, size, steps, ages and value cap before writing, and the written files read back after writing.
+
+The sealed DefiLlama snapshot (758 protocols, as of 2026-11-14) is NOT in this repository: the grader mounts it at `/input/snapshot.json`, and local runs point `--input` at the kit's copy.
