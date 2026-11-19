@@ -82,7 +82,7 @@ export function verifyWritten(out: string, board: BoardRow[]): string | null {
     if (!existsSync(dataPath)) return `data.js was not written to ${out}`;
     const data = readFileSync(dataPath, 'utf8');
     if (!data.startsWith('window.RADAR=')) return `data.js does not start with the radar payload`;
-    if (!data.includes('"model_version":"radar-3"')) return `data.js does not carry the radar-3 model`;
+    if (!data.includes('"model_version":"radar-4"')) return `data.js does not carry the radar-4 model`;
     if (!data.includes('"validation":')) return `data.js does not carry the validation summary`;
     if (data.length < 100) return `data.js is only ${data.length} characters: the dashboard would render empty`;
     const dossierPath = join(out, 'dossier.json');

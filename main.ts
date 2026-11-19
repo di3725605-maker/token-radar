@@ -1,7 +1,7 @@
 // Token Radar's entry program (Node 22, standard library only).
 //
 // The program reads the sealed snapshot from /input/snapshot.json (or --input <file|dir>), fits
-// the radar-3 model on the snapshot's own traded tokens (lib/model.ts), validates it by
+// the radar-4 model on the snapshot's own traded tokens (lib/model.ts), validates it by
 // leave-one-out, walk-forward and bootstrap (lib/validate.ts), scores every pre-token protocol
 // into the ranked board, writes the board to /output/board.json, and copies this repository's
 // dashboard/ and screenshots/ to /output. Last, it writes /output/dossier.json, the summary
@@ -53,7 +53,7 @@ const validation = validateModel(snapshot, fitted0);
 const fitted = { ...fitted0, band25: validation.band25, band90: validation.band90 };
 
 // The fitted curve must reproduce the independent fit in the fit report (value = 6220.36 *
-// TVL^0.4453 on the sealed snapshot). A large drift means the fit or the comp set changed.
+// TVL^0.4453 on the sealed snapshot, radar-4). A large drift means the fit or the comp set changed.
 if (Math.abs(fitted.curve.a - 6220.36) / 6220.36 > 0.02 || Math.abs(fitted.curve.b - 0.4453) > 0.01) {
   process.stderr.write(
     `token radar: the fitted curve drifted from the fit report: A=${fitted.curve.a.toFixed(2)}, b=${fitted.curve.b.toFixed(4)} (expected A=6220.36, b=0.4453)\n`,
@@ -97,6 +97,10 @@ const radar: RadarData = {
   validation: validation.summary,
   ablation: validation.ablation,
   odds_bakeoff: validation.oddsBakeoff,
+  comp_probes: validation.compProbes,
+  survivor_probes: validation.survivorProbes,
+  small_n_rules: validation.smallNRules,
+  farm_sensitivity: validation.farmSensitivity,
   ledger: buildLedger(snapshot, board),
   comps: compSet(snapshot).map((p) => ({ slug: p.slug, name: p.name, tvl_usd: p.tvl_usd, mcap_usd: p.mcap_usd! })),
   odds_categories: categoryRatesTable(snapshot),

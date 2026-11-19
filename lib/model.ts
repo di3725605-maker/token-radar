@@ -1,4 +1,4 @@
-// Token Radar's model, radar-3: one snapshot of the protocol universe in, one ranked board out.
+// Token Radar's model, radar-4: one snapshot of the protocol universe in, one ranked board out.
 //
 // The board covers every slug in the snapshot's watchlist (the floor, never a ceiling), adds the
 // pre-token protocols above the floor the watchlist misses (the found set, by TVL), and adds
@@ -23,12 +23,15 @@
 //   odds         = the launch odds: the share of protocols of the row's age bucket that record
 //                  a token, times the row's category ever-rate relative to the snapshot-wide
 //                  rate, raised to 0.25, clamped to [0.05, 0.95]. Age buckets: under 6 months,
-//                  6-12 months, 1-2 years, 2-4 years, over 4 years. Every category's own
-//                  ever-rate is used, however small its membership; the 0.25 exponent shrinks
-//                  the category signal so a thin category cannot dominate the odds. No listed
-//                  date: the bucket rate is the snapshot-wide rate. The odds are a statement
-//                  about the share of protocols of this age and category that record a token
-//                  — not a promise that this protocol launches next.
+//                  6-12 months, 1-2 years, 2-4 years, over 4 years. Radar-4 change: every
+//                  category rate is SHRUNK toward the snapshot-wide rate with pseudo-count
+//                  K = 5 — shrunk = (n * raw + 5 * overall) / (n + 5) — so a thin category
+//                  (Prediction Market has n = 3) can no longer swing the odds on one member,
+//                  and there is no fallback cliff at n = 5. A shrunk rate is never zero, so
+//                  the old zero-rate fallback in launchOdds is gone: the formula applies
+//                  uniformly. No listed date: the bucket rate is the snapshot-wide rate. The
+//                  odds are a statement about the share of protocols of this age and category
+//                  that record a token — not a promise that this protocol launches next.
 //   implied      = value_if_launches * odds, rounded, at least $1.
 //   bands        = the held-out bands from the leave-one-out validation (lib/validate.ts):
 //                  P25-P75 is implied / 2.71 ... implied * 2.71 and P10-P90 is implied / 6.40
@@ -36,7 +39,7 @@
 //                  into the output with the hold rates they earned.
 //
 // What the model does NOT use, and why (the evidence is in lib/validate.ts and the fit report
-// at ~/workspace/makefun/fit/radar3-fit-report.md): no category premium (it fails
+// at ~/workspace/makefun/fit/radar4-fit-report.md): no category premium (it fails
 // leave-one-out under every tested formulation), no 7-day growth term (its fitted sign is
 // negative and it hurts out-of-sample — a crash-week artifact), and no age term in the value
 // curve (age belongs in the odds, not in the value). The dashboard's Method tab shows the
@@ -76,7 +79,9 @@ export interface SizeCurve {
   b: number;
   /** How many comps the fit used. */
   comps: number;
-  /** The log-scale R-squared of the fit. */
+  /** The log-scale R-squared of the OLS fit, for the Method tab (the fit report quotes it). */
+  rSquaredOls: number;
+  /** The log-scale R-squared of the final Huber fit. */
   rSquared: number;
 }
 
@@ -86,8 +91,14 @@ export interface OddsParams {
   overall: number;
   /** The age-bucket rates, in bucket order: <6mo, 6-12mo, 1-2y, 2-4y, >4y. */
   bucketRates: number[];
-  /** The per-category ever-rates (every category's own share). */
+  /** The per-category ever-rates, SHRUNK toward `overall` with pseudo-count K = 5. */
   categoryRates: Map<string, number>;
+  /** The per-category ever-rates before shrinkage, for the Method tab. */
+  categoryRawRates: Map<string, number>;
+  /** The per-category member counts, for the Method tab. */
+  categoryCounts: Map<string, number>;
+  /** The shrinkage pseudo-count. */
+  shrinkK: number;
   /** The exponent on the relative category rate. */
   exponent: number;
   /** The odds clamp. */
@@ -106,7 +117,7 @@ export interface FittedModel {
 }
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-3';
+export const MODEL_VERSION = 'radar-4';
 
 /** How many pre-token protocols above the watchlist floor the found set carries, by TVL. */
 export const FOUND_ROWS = 20;
@@ -256,8 +267,11 @@ export interface AblationRow {
   looMedianMiss: number;
   looWithin3x: number;
   walkForward50: number;
+  walkForward60: number;
   walkForward70: number;
+  walkForward80: number;
   walkForwardCutoff: number;
+  walkForwardCutoff25: number;
   verdict: string;
 }
 
@@ -277,15 +291,70 @@ export interface ValidationSummary {
   looMedianMiss: number;
   looWithin3x: number;
   walkForward50: number;
+  walkForward60: number;
   walkForward70: number;
+  walkForward80: number;
   walkForwardCutoff: number;
+  walkForwardCutoff25: number;
   flatLooMedianMiss: number;
   flatWalkForward50: number;
   band25Hold: number;
   band90Hold: number;
   rankStabilityTop20: number;
+  rankStabilityMedianWidth: number;
+  rank1Polymarket: number;
+  rank1Sentora: number;
+  oddsLooAccuracy: number;
+  oddsLooBrier: number;
   comps: number;
   rSquared: number;
+  rSquaredOls: number;
+}
+
+/** One row of the fair comp-set comparison (fit report §2.2, fit4c): every candidate
+ *  scored on the SAME sets, so a smaller set cannot win by dropping its hardest comps. */
+export interface CompSetProbeRow {
+  label: string;
+  trainN: number;
+  looAll101: number;
+  wf50: number;
+  wf70: number;
+  wfCut: number;
+  z: number;
+}
+
+/** One row of the survivor-form odds investigation (fit report §4.5, odds4b): the Weibull
+ *  CDF fit at a fixed asymptote L. All L values fit better as L rises, so L is
+ *  unidentifiable and the form is DROPPED — the numbers are kept as evidence. */
+export interface SurvivorProbeRow {
+  asymptoteL: number;
+  tau: number;
+  k: number;
+  weightedSse: number;
+  odds56d: number;
+  odds407d: number;
+  odds1845d: number;
+  boardTotal: number;
+}
+
+/** One row of the small-n category-rule test (fit report §4.4, odds4b): proper-LOO
+ *  accuracy/Brier per rule, and the board the rule produces. */
+export interface SmallNRuleRow {
+  rule: string;
+  looAccuracy: number;
+  looBrier: number;
+  polymarketOdds: number;
+  polymarketImplied: number;
+  boardTotal: number;
+}
+
+/** One row of the farm-math sensitivity grid (fit report §8.4, farm4): one assumption
+ *  changed at a time from the baseline; FARM counts at the $1,000 and $10,000 tickets. */
+export interface FarmSensitivityRow {
+  change: string;
+  farm1000: number;
+  farm10000: number;
+  defensible: string;
 }
 
 /** Everything the dashboard needs: the board, the live set, the model and its validation. */
@@ -310,11 +379,17 @@ export interface RadarData {
   validation: ValidationSummary;
   ablation: AblationRow[];
   odds_bakeoff: OddsBakeoffRow[];
+  /** The fair comp-set probes, the survivor-form investigation and the small-n rule test. */
+  comp_probes: CompSetProbeRow[];
+  survivor_probes: SurvivorProbeRow[];
+  small_n_rules: SmallNRuleRow[];
+  /** The farm-math sensitivity grid, one assumption at a time. */
+  farm_sensitivity: FarmSensitivityRow[];
   ledger: LedgerGroup[];
   /** The traded comps the curve is fit on, for the scatter. */
   comps: { slug: string; name: string; tvl_usd: number; mcap_usd: number }[];
-  /** The per-category ever-rates, for the Method tab. */
-  odds_categories: { category: string; n: number; rate: number }[];
+  /** The per-category ever-rates, raw and shrunk (K = 5), for the Method tab. */
+  odds_categories: { category: string; n: number; rate: number; shrunkRate: number }[];
   rows: BoardRow[];
   live: LiveRow[];
 }
@@ -468,6 +543,14 @@ export function huberLogLogFit(comps: SnapshotProtocol[]): SizeCurve {
   }
 
   let [intercept, slope] = wls(new Array<number>(n).fill(1));
+  const yMean0 = mean(ys);
+  let ssTot0 = 0;
+  let ssResOls = 0;
+  for (let i = 0; i < n; i++) {
+    ssTot0 += (ys[i]! - yMean0) ** 2;
+    ssResOls += (ys[i]! - (intercept + slope * xs[i]!)) ** 2;
+  }
+  const rSquaredOls = ssTot0 > 0 ? 1 - ssResOls / ssTot0 : 0;
   for (let iter = 0; iter < 100; iter++) {
     const residuals = xs.map((x, i) => ys[i]! - (intercept + slope * x));
     const med = median(residuals);
@@ -492,7 +575,7 @@ export function huberLogLogFit(comps: SnapshotProtocol[]): SizeCurve {
     ssTot += (ys[i]! - yMean) ** 2;
     ssRes += (ys[i]! - fitted) ** 2;
   }
-  return { a: Math.exp(intercept), b: slope, comps: n, rSquared: ssTot > 0 ? 1 - ssRes / ssTot : 0 };
+  return { a: Math.exp(intercept), b: slope, comps: n, rSquaredOls, rSquared: ssTot > 0 ? 1 - ssRes / ssTot : 0 };
 }
 
 /** The age bucket index for an age in days: <6mo, 6-12mo, 1-2y, 2-4y, >4y. */
@@ -507,9 +590,11 @@ export function ageBucket(age: number | null): number {
 
 /**
  * The launch-odds parameters, computed from the snapshot: the bucket rates (share recording
- * a token per age bucket), the per-category ever-rates (every category's own share), and the
+ * a token per age bucket), the per-category ever-rates SHRUNK toward the snapshot-wide rate
+ * with pseudo-count K = 5 (shrunk = (n * raw + 5 * overall) / (n + 5)), and the
  * snapshot-wide rate. The 0.25 exponent on the relative category rate is what keeps a thin
- * category's rate from dominating the odds, so no member-count fallback is needed.
+ * category's rate from dominating the odds. Shrunk rates are never zero, so no
+ * member-count fallback is needed and there is no cliff at n = 5.
  */
 export function oddsParams(snapshot: Snapshot): OddsParams {
   const dated = snapshot.protocols.filter((p) => p.listed_at !== null);
@@ -531,11 +616,17 @@ export function oddsParams(snapshot: Snapshot): OddsParams {
     if (recordsToken(p)) entry.hits += 1;
     byCategory.set(key, entry);
   }
+  const shrinkK = 5;
   const categoryRates = new Map<string, number>();
+  const categoryRawRates = new Map<string, number>();
+  const categoryCounts = new Map<string, number>();
   for (const [key, entry] of byCategory) {
-    categoryRates.set(key, entry.hits / entry.n);
+    const raw = entry.hits / entry.n;
+    categoryRawRates.set(key, raw);
+    categoryCounts.set(key, entry.n);
+    categoryRates.set(key, (entry.n * raw + shrinkK * overall) / (entry.n + shrinkK));
   }
-  return { overall, bucketRates, categoryRates, exponent: 0.25, min: 0.05, max: 0.95 };
+  return { overall, bucketRates, categoryRates, categoryRawRates, categoryCounts, shrinkK, exponent: 0.25, min: 0.05, max: 0.95 };
 }
 
 /** A protocol's launch odds under the fitted parameters, with its bucket and category rates. */
@@ -547,11 +638,12 @@ export function launchOdds(
   const age = ageDays(asOf, protocol.listed_at);
   const bucket = ageBucket(age);
   const bucketRate = bucket < 0 ? odds.overall : odds.bucketRates[bucket]!;
-  // A category with no token yet (ever-rate zero) carries no signal: one or two pre-token
-  // members are not evidence the category never launches, so the odds fall back to the
-  // bucket rate alone. A protocol with no category uses the snapshot-wide rate.
+  // The category rate is the SHRUNK rate (never zero: the shrinkage pulls every
+  // category toward the snapshot-wide rate), so the formula applies uniformly —
+  // no zero-rate fallback and no n < 5 cliff. A protocol with no category uses
+  // the snapshot-wide rate.
   const categoryRate = protocol.category === null ? odds.overall : (odds.categoryRates.get(protocol.category) ?? odds.overall);
-  const raw = categoryRate > 0 ? bucketRate * (categoryRate / odds.overall) ** odds.exponent : bucketRate;
+  const raw = bucketRate * (categoryRate / odds.overall) ** odds.exponent;
   return { odds: Math.min(odds.max, Math.max(odds.min, raw)), bucketRate, categoryRate };
 }
 
@@ -740,20 +832,18 @@ export function nearestComps(
 }
 
 /**
- * The per-category ever-rates for the Method tab: each category's member count and its
- * share recording a token, highest rate first.
+ * The per-category ever-rates for the Method tab: each category's member count, its raw
+ * share recording a token, and its shrunk (K = 5) rate, highest raw rate first.
  */
-export function categoryRatesTable(snapshot: Snapshot): { category: string; n: number; rate: number }[] {
-  const byCategory = new Map<string, { n: number; hits: number }>();
-  for (const p of snapshot.protocols) {
-    if (p.category === null) continue;
-    const entry = byCategory.get(p.category) ?? { n: 0, hits: 0 };
-    entry.n += 1;
-    if (recordsToken(p)) entry.hits += 1;
-    byCategory.set(p.category, entry);
-  }
-  return [...byCategory.entries()]
-    .map(([category, entry]) => ({ category, n: entry.n, rate: entry.hits / entry.n }))
+export function categoryRatesTable(snapshot: Snapshot): { category: string; n: number; rate: number; shrunkRate: number }[] {
+  const params = oddsParams(snapshot);
+  return [...params.categoryCounts.entries()]
+    .map(([category, n]) => ({
+      category,
+      n,
+      rate: params.categoryRawRates.get(category) ?? params.overall,
+      shrunkRate: params.categoryRates.get(category) ?? params.overall,
+    }))
     .sort((a, b) => b.rate - a.rate || b.n - a.n || a.category.localeCompare(b.category));
 }
 
