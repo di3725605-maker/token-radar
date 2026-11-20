@@ -4,8 +4,9 @@
 // the questions it does not ask. Before anything is written, verifyBoard
 // checks that every slug is real and used once, that the board is the right
 // size, that the trimmed farm steps fit the gate, that every row's age
-// matches the snapshot, and that no row claims more than the gate's value
-// cap. After writing, verifyWritten reads the files back and checks they
+// matches the snapshot, that no row claims more than the gate's value
+// cap, and that every FARM verdict really nets positive (the radar-5 rule).
+// After writing, verifyWritten reads the files back and checks they
 // landed, parse, and match the board that was written. main.ts refuses to
 // hand in a board that fails either pass, so a bad board fails here with a
 // plain message instead of failing the gate on the server.
@@ -52,6 +53,14 @@ export function verifyBoard(board: BoardRow[], snapshot: Snapshot): string | nul
       return `${row.slug} has non-finite farm economics`;
     }
     if (!['FARM', 'THIN', 'SKIP'].includes(row.farm.verdict)) return `${row.slug} has verdict ${row.farm.verdict}`;
+    // The radar-5 verdict rule, checked independently of the builder: a FARM row must
+    // net positive at its own odds, and a THIN row must not.
+    if (row.farm.verdict === 'FARM' && !(row.farm.netUsd > 0)) {
+      return `${row.slug} is FARM with net $${row.farm.netUsd.toFixed(2)}: FARM means net > 0`;
+    }
+    if (row.farm.verdict === 'THIN' && row.farm.netUsd > 0) {
+      return `${row.slug} is THIN with net $${row.farm.netUsd.toFixed(2)}: a positive net is FARM`;
+    }
     if (row.nearest_comps.length === 0) return `${row.slug} has no nearest comps`;
     for (const step of row.farm_steps) {
       const trimmed = step.trim().length;
@@ -82,7 +91,7 @@ export function verifyWritten(out: string, board: BoardRow[]): string | null {
     if (!existsSync(dataPath)) return `data.js was not written to ${out}`;
     const data = readFileSync(dataPath, 'utf8');
     if (!data.startsWith('window.RADAR=')) return `data.js does not start with the radar payload`;
-    if (!data.includes('"model_version":"radar-4"')) return `data.js does not carry the radar-4 model`;
+    if (!data.includes('"model_version":"radar-5"')) return `data.js does not carry the radar-5 model`;
     if (!data.includes('"validation":')) return `data.js does not carry the validation summary`;
     if (data.length < 100) return `data.js is only ${data.length} characters: the dashboard would render empty`;
     const dossierPath = join(out, 'dossier.json');

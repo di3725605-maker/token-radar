@@ -1,4 +1,4 @@
-// Token Radar's model, radar-4: one snapshot of the protocol universe in, one ranked board out.
+// Token Radar's model, radar-5: one snapshot of the protocol universe in, one ranked board out.
 //
 // The board covers every slug in the snapshot's watchlist (the floor, never a ceiling), adds the
 // pre-token protocols above the floor the watchlist misses (the found set, by TVL), and adds
@@ -20,33 +20,42 @@
 //                  the TVL buys about 2.8 times the value, not ten. The fit is recomputed from
 //                  the snapshot on every run; the constants are stamped into the output so the
 //                  dashboard recomputes the same numbers.
-//   odds         = the launch odds: the share of protocols of the row's age bucket that record
-//                  a token, times the row's category ever-rate relative to the snapshot-wide
-//                  rate, raised to 0.25, clamped to [0.05, 0.95]. Age buckets: under 6 months,
-//                  6-12 months, 1-2 years, 2-4 years, over 4 years. Radar-4 change: every
-//                  category rate is SHRUNK toward the snapshot-wide rate with pseudo-count
-//                  K = 5 — shrunk = (n * raw + 5 * overall) / (n + 5) — so a thin category
-//                  (Prediction Market has n = 3) can no longer swing the odds on one member,
-//                  and there is no fallback cliff at n = 5. A shrunk rate is never zero, so
-//                  the old zero-rate fallback in launchOdds is gone: the formula applies
-//                  uniformly. No listed date: the bucket rate is the snapshot-wide rate. The
-//                  odds are a statement about the share of protocols of this age and category
-//                  that record a token — not a promise that this protocol launches next.
+//   odds         = the SURVIVOR launch odds (radar-5 change): the share of protocols that
+//                  will ever launch given they are pre-token now, at the row's age —
+//                  (L - F(t)) / (1 - F(t)), where F is a Weibull CDF fitted to the five
+//                  age-bucket rates at the fixed asymptote L = 0.85 (tau = 693, k = 0.678 on
+//                  the sealed snapshot), times the row's category ever-rate relative to the
+//                  snapshot-wide rate, raised to 0.25, clamped to [0.05, 0.95]. The bucket
+//                  rates stay visible beside every row as the comparison: they measure
+//                  P(records a token | age t) in a cross-section, which is the WRONG estimand
+//                  for a pre-token protocol — young pre-token protocols have the most launch
+//                  runway left, old ones have had their chances. L cannot be identified from
+//                  one snapshot (the fit improves monotonically as L rises); 0.85 is the
+//                  central judgment case, and the Method tab shows the L = 0.80 / 0.85 / 0.90
+//                  sensitivity (board totals $1.91B / $2.17B / $2.44B, FARM 41 / 47 / 51).
+//                  A protocol with no listing date keeps the bucket-form fallback (the
+//                  snapshot-wide rate as its bucket rate): the survivor form needs an age.
 //   implied      = value_if_launches * odds, rounded, at least $1.
 //   bands        = the held-out bands from the leave-one-out validation (lib/validate.ts):
 //                  P25-P75 is implied / 2.71 ... implied * 2.71 and P10-P90 is implied / 6.40
 //                  ... implied * 6.40 on the sealed snapshot. The band factors are stamped
 //                  into the output with the hold rates they earned.
 //
-// What the model does NOT use, and why (the evidence is in lib/validate.ts and the fit report
-// at ~/workspace/makefun/fit/radar4-fit-report.md): no category premium (it fails
-// leave-one-out under every tested formulation), no 7-day growth term (its fitted sign is
-// negative and it hurts out-of-sample — a crash-week artifact), and no age term in the value
-// curve (age belongs in the odds, not in the value). The dashboard's Method tab shows the
-// ablation table with the numbers, so the omissions are argued, not hidden.
-//
 // A row's farm plan is costed to the dollar: slice, fees, forgone yield, net, net per hour,
 // the ticket it pays from, break-even odds and a FARM / THIN / SKIP verdict (see farmEconomics).
+// The verdict rule is radar-5's second change: FARM iff the expected net is positive at the
+// row's own odds (equivalently odds > break-even odds). The old rule (FARM iff break-even
+// odds <= 0.10) was a stress test, not the expected-value decision — it labelled a row SKIP
+// even when the numbers said farming it pays. Break-even odds stay displayed on every row as
+// the risk gauge, and the Method tab keeps the old rule's counts for comparison.
+//
+// What the model does NOT use, and why (the evidence is in lib/validate.ts and the fit report
+// at ~/workspace/makefun/fit/radar4-fit-report.md, extended by the radar-5 fit at
+// ~/workspace/makefun/round5/fit5.py): no category premium (it fails leave-one-out under
+// every tested formulation), no 7-day growth term (its fitted sign is negative and it hurts
+// out-of-sample — a crash-week artifact), and no age term in the value curve (age belongs in
+// the odds, not in the value). The dashboard's Method tab shows the ablation table with the
+// numbers, so the omissions are argued, not hidden.
 
 /** The snapshot's protocol entry: exactly the ten fields the sealed input carries. */
 export interface SnapshotProtocol {
@@ -85,12 +94,21 @@ export interface SizeCurve {
   rSquared: number;
 }
 
+/** One age-bucket point for the Weibull fit: median age, token rate, member count. */
+export interface BucketPoint {
+  medianAge: number;
+  rate: number;
+  n: number;
+}
+
 /** The launch-odds parameters, computed from the snapshot. */
 export interface OddsParams {
   /** The snapshot-wide share of protocols recording a token. */
   overall: number;
   /** The age-bucket rates, in bucket order: <6mo, 6-12mo, 1-2y, 2-4y, >4y. */
   bucketRates: number[];
+  /** The five bucket points (median age, rate, n) the Weibull CDF is fitted to. */
+  bucketPoints: BucketPoint[];
   /** The per-category ever-rates, SHRUNK toward `overall` with pseudo-count K = 5. */
   categoryRates: Map<string, number>;
   /** The per-category ever-rates before shrinkage, for the Method tab. */
@@ -104,6 +122,14 @@ export interface OddsParams {
   /** The odds clamp. */
   min: number;
   max: number;
+  /** The survivor form's asymptote L (the central judgment case). */
+  survivorL: number;
+  /** The Weibull scale fitted at L (days). */
+  survivorTau: number;
+  /** The Weibull shape fitted at L. */
+  survivorK: number;
+  /** The weighted squared error of the Weibull fit at L. */
+  survivorSse: number;
 }
 
 /** The fitted model: the curve, the odds parameters, and the band factors. */
@@ -117,7 +143,11 @@ export interface FittedModel {
 }
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-4';
+export const MODEL_VERSION = 'radar-5';
+
+/** The survivor form's central asymptote: L cannot be identified from one snapshot, so the
+ *  central judgment case is stated with its sensitivity (L = 0.80 / 0.90) in the Method tab. */
+export const SURVIVOR_L = 0.85;
 
 /** How many pre-token protocols above the watchlist floor the found set carries, by TVL. */
 export const FOUND_ROWS = 20;
@@ -137,8 +167,7 @@ export const TICKETS = [500, 1_000, 5_000, 10_000];
 /** The default ticket: the board's verdicts are struck at this size. */
 export const DEFAULT_TICKET = 1_000;
 
-/** The verdict thresholds on break-even launch odds. */
-export const FARM_BE_MAX = 0.1;
+/** The verdict thresholds on break-even launch odds (THIN/SKIP split; FARM is by net now). */
 export const THIN_BE_MAX = 0.33;
 
 /** The forgone yield rate (a 4% T-bill) the farm netting charges. */
@@ -236,6 +265,10 @@ export interface BoardRow {
     category_rate: number;
     odds: number;
     age_days: number | null;
+    /** The survivor odds before the category adjustment, or null when the row has no age. */
+    survivor_rate: number | null;
+    /** The bucket-form odds for the same row, for comparison in the detail view. */
+    bucket_odds: number;
   };
   nearest_comps: NearestComp[];
   /** The farm economics at the default ticket and share. */
@@ -304,6 +337,8 @@ export interface ValidationSummary {
   rankStabilityMedianWidth: number;
   rank1Polymarket: number;
   rank1Sentora: number;
+  /** The survivor odds' proper-LOO accuracy/Brier (the cross-sectional test — see the
+   *  Method tab for why this test measures the wrong estimand for survivor odds). */
   oddsLooAccuracy: number;
   oddsLooBrier: number;
   comps: number;
@@ -323,9 +358,9 @@ export interface CompSetProbeRow {
   z: number;
 }
 
-/** One row of the survivor-form odds investigation (fit report §4.5, odds4b): the Weibull
- *  CDF fit at a fixed asymptote L. All L values fit better as L rises, so L is
- *  unidentifiable and the form is DROPPED — the numbers are kept as evidence. */
+/** One row of the survivor-form sensitivity (computed at build time): the Weibull CDF fit
+ *  at a fixed asymptote L, the survivor odds it implies at three ages, and the board it
+ *  produces. L = 0.85 is the shipped central case; the other two show what rides on it. */
 export interface SurvivorProbeRow {
   asymptoteL: number;
   tau: number;
@@ -335,6 +370,8 @@ export interface SurvivorProbeRow {
   odds407d: number;
   odds1845d: number;
   boardTotal: number;
+  farm1000: number;
+  shipped: boolean;
 }
 
 /** One row of the small-n category-rule test (fit report §4.4, odds4b): proper-LOO
@@ -348,13 +385,22 @@ export interface SmallNRuleRow {
   boardTotal: number;
 }
 
-/** One row of the farm-math sensitivity grid (fit report §8.4, farm4): one assumption
+/** One row of the farm-math sensitivity grid (computed at build time): one assumption
  *  changed at a time from the baseline; FARM counts at the $1,000 and $10,000 tickets. */
 export interface FarmSensitivityRow {
   change: string;
   farm1000: number;
   farm10000: number;
   defensible: string;
+}
+
+/** One split-half validation of the Weibull launch-time CDF: fit F on half the dated
+ *  protocols, score P(token) = F(age) on the other half (and vice versa), against the
+ *  bucket rates on the same halves. */
+export interface SplitHalfBrier {
+  weibullF: number;
+  bucket: number;
+  nTest: number;
 }
 
 /** Everything the dashboard needs: the board, the live set, the model and its validation. */
@@ -374,17 +420,26 @@ export interface RadarData {
   odds_overall: number;
   odds_bucket_rates: number[];
   odds_exponent: number;
+  /** The survivor form's fitted parameters (L = 0.85 central case). */
+  survivor_l: number;
+  survivor_tau: number;
+  survivor_k: number;
+  survivor_sse: number;
   band25: number;
   band90: number;
   validation: ValidationSummary;
   ablation: AblationRow[];
   odds_bakeoff: OddsBakeoffRow[];
-  /** The fair comp-set probes, the survivor-form investigation and the small-n rule test. */
+  /** The fair comp-set probes, the survivor-form sensitivity and the small-n rule test. */
   comp_probes: CompSetProbeRow[];
   survivor_probes: SurvivorProbeRow[];
   small_n_rules: SmallNRuleRow[];
   /** The farm-math sensitivity grid, one assumption at a time. */
   farm_sensitivity: FarmSensitivityRow[];
+  /** The split-half Brier of the Weibull F fit vs the bucket rates. */
+  split_half_brier: SplitHalfBrier;
+  /** How many of the top 20 stay top 20, and who takes rank 1 across refits. */
+  rank1_counts: { slug: string; name: string; count: number }[];
   ledger: LedgerGroup[];
   /** The traded comps the curve is fit on, for the scatter. */
   comps: { slug: string; name: string; tvl_usd: number; mcap_usd: number }[];
@@ -588,13 +643,101 @@ export function ageBucket(age: number | null): number {
   return 4;
 }
 
+/** The five age-bucket points: median age, token rate and member count per bucket. */
+export function bucketPoints(snapshot: Snapshot): BucketPoint[] {
+  const dated = snapshot.protocols.filter((p) => p.listed_at !== null);
+  const points: BucketPoint[] = [];
+  for (let b = 0; b < 5; b++) {
+    const members = dated.filter((p) => ageBucket(ageDays(snapshot.as_of, p.listed_at)) === b);
+    const ages = members.map((p) => ageDays(snapshot.as_of, p.listed_at)!).sort((x, y) => x - y);
+    const hits = members.filter(recordsToken).length;
+    points.push({
+      medianAge: ages.length > 0 ? median(ages) : 0,
+      rate: members.length > 0 ? hits / members.length : 0,
+      n: members.length,
+    });
+  }
+  return points;
+}
+
+/** The Weibull launch-time CDF at age t (days): F(t) = L * (1 - exp(-(t/tau)^k)). */
+export function weibullF(t: number, L: number, tau: number, k: number): number {
+  if (t <= 0) return 0;
+  return L * (1 - Math.exp(-((t / tau) ** k)));
+}
+
+/**
+ * Fit (tau, k) of the Weibull CDF to the bucket points at a fixed asymptote L, by weighted
+ * least squares (weights = bucket member counts). A deterministic coarse-to-fine grid search
+ * over (log tau, k): the surface is smooth and the fit is a 2-parameter problem on 5 points,
+ * so a grid is exact enough and never diverges. Returns tau, k and the weighted SSE.
+ */
+export function fitWeibull(points: BucketPoint[], L: number): { tau: number; k: number; sse: number } {
+  /** Weighted SSE of one (tau, k) pair against the bucket points. */
+  function sse(tau: number, k: number): number {
+    let total = 0;
+    for (const pt of points) {
+      const diff = weibullF(pt.medianAge, L, tau, k) - pt.rate;
+      total += pt.n * diff * diff;
+    }
+    return total;
+  }
+  // Coarse grid: tau log-spaced 100..3000 (48 steps), k 0.30..1.20 (48 steps).
+  let bestTau = 700;
+  let bestK = 0.68;
+  let bestSse = Number.POSITIVE_INFINITY;
+  const tauSteps = 48;
+  const kSteps = 48;
+  for (let i = 0; i < tauSteps; i++) {
+    const tau = Math.exp(Math.log(100) + (Math.log(3000) - Math.log(100)) * (i / (tauSteps - 1)));
+    for (let j = 0; j < kSteps; j++) {
+      const k = 0.3 + (1.2 - 0.3) * (j / (kSteps - 1));
+      const value = sse(tau, k);
+      if (value < bestSse) {
+        bestSse = value;
+        bestTau = tau;
+        bestK = k;
+      }
+    }
+  }
+  // Two refinement passes: a 9x9 local grid around the best, halving the step each time.
+  let tauStep = (Math.log(3000) - Math.log(100)) / (tauSteps - 1);
+  let kStep = (1.2 - 0.3) / (kSteps - 1);
+  for (let pass = 0; pass < 2; pass++) {
+    tauStep /= 2;
+    kStep /= 2;
+    for (let i = -4; i <= 4; i++) {
+      const tau = Math.exp(Math.log(bestTau) + i * tauStep);
+      if (tau <= 0) continue;
+      for (let j = -4; j <= 4; j++) {
+        const k = bestK + j * kStep;
+        if (k <= 0) continue;
+        const value = sse(tau, k);
+        if (value < bestSse) {
+          bestSse = value;
+          bestTau = tau;
+          bestK = k;
+        }
+      }
+    }
+  }
+  return { tau: bestTau, k: bestK, sse: bestSse };
+}
+
+/** The survivor odds before the category adjustment: (L - F(t)) / (1 - F(t)). */
+export function survivorRate(age: number, L: number, tau: number, k: number): number {
+  const f = weibullF(age, L, tau, k);
+  return (L - f) / (1 - f);
+}
+
 /**
  * The launch-odds parameters, computed from the snapshot: the bucket rates (share recording
  * a token per age bucket), the per-category ever-rates SHRUNK toward the snapshot-wide rate
- * with pseudo-count K = 5 (shrunk = (n * raw + 5 * overall) / (n + 5)), and the
- * snapshot-wide rate. The 0.25 exponent on the relative category rate is what keeps a thin
- * category's rate from dominating the odds. Shrunk rates are never zero, so no
- * member-count fallback is needed and there is no cliff at n = 5.
+ * with pseudo-count K = 5 (shrunk = (n * raw + 5 * overall) / (n + 5)), the snapshot-wide
+ * rate, and the Weibull CDF fitted to the bucket points at the fixed asymptote L = 0.85.
+ * The 0.25 exponent on the relative category rate is what keeps a thin category's rate from
+ * dominating the odds. Shrunk rates are never zero, so no member-count fallback is needed
+ * and there is no cliff at n = 5.
  */
 export function oddsParams(snapshot: Snapshot): OddsParams {
   const dated = snapshot.protocols.filter((p) => p.listed_at !== null);
@@ -626,15 +769,39 @@ export function oddsParams(snapshot: Snapshot): OddsParams {
     categoryCounts.set(key, entry.n);
     categoryRates.set(key, (entry.n * raw + shrinkK * overall) / (entry.n + shrinkK));
   }
-  return { overall, bucketRates, categoryRates, categoryRawRates, categoryCounts, shrinkK, exponent: 0.25, min: 0.05, max: 0.95 };
+  const points = bucketPoints(snapshot);
+  const fit = fitWeibull(points, SURVIVOR_L);
+  return {
+    overall,
+    bucketRates,
+    bucketPoints: points,
+    categoryRates,
+    categoryRawRates,
+    categoryCounts,
+    shrinkK,
+    exponent: 0.25,
+    min: 0.05,
+    max: 0.95,
+    survivorL: SURVIVOR_L,
+    survivorTau: fit.tau,
+    survivorK: fit.k,
+    survivorSse: fit.sse,
+  };
 }
 
-/** A protocol's launch odds under the fitted parameters, with its bucket and category rates. */
+/**
+ * A protocol's launch odds under the fitted parameters, with its bucket and category rates.
+ * The age factor is the SURVIVOR odds (L - F(t)) / (1 - F(t)) — the share of protocols that
+ * will ever launch given they are pre-token now at this age — times the category adjustment.
+ * A protocol with no listing date has no age, so it keeps the bucket-form fallback: the
+ * snapshot-wide rate as its bucket rate, with the same category adjustment. `bucketOdds` is
+ * the old bucket-form odds for the same row, kept for comparison in the detail view.
+ */
 export function launchOdds(
   protocol: SnapshotProtocol,
   asOf: string,
   odds: OddsParams,
-): { odds: number; bucketRate: number; categoryRate: number } {
+): { odds: number; bucketRate: number; categoryRate: number; survivorRate: number | null; bucketOdds: number } {
   const age = ageDays(asOf, protocol.listed_at);
   const bucket = ageBucket(age);
   const bucketRate = bucket < 0 ? odds.overall : odds.bucketRates[bucket]!;
@@ -643,8 +810,14 @@ export function launchOdds(
   // no zero-rate fallback and no n < 5 cliff. A protocol with no category uses
   // the snapshot-wide rate.
   const categoryRate = protocol.category === null ? odds.overall : (odds.categoryRates.get(protocol.category) ?? odds.overall);
-  const raw = bucketRate * (categoryRate / odds.overall) ** odds.exponent;
-  return { odds: Math.min(odds.max, Math.max(odds.min, raw)), bucketRate, categoryRate };
+  const categoryFactor = (categoryRate / odds.overall) ** odds.exponent;
+  const bucketOdds = Math.min(odds.max, Math.max(odds.min, bucketRate * categoryFactor));
+  if (age === null) {
+    return { odds: bucketOdds, bucketRate, categoryRate, survivorRate: null, bucketOdds };
+  }
+  const surv = survivorRate(age, odds.survivorL, odds.survivorTau, odds.survivorK);
+  const raw = surv * categoryFactor;
+  return { odds: Math.min(odds.max, Math.max(odds.min, raw)), bucketRate, categoryRate, survivorRate: surv, bucketOdds };
 }
 
 /** The value if a token launches, from the fitted curve. */
@@ -657,15 +830,17 @@ export function impliedValue(
   protocol: SnapshotProtocol,
   asOf: string,
   fitted: FittedModel,
-): { valueIfLaunches: number; odds: number; bucketRate: number; categoryRate: number; implied: number; age: number | null } {
+): { valueIfLaunches: number; odds: number; bucketRate: number; categoryRate: number; survivorRate: number | null; bucketOdds: number; implied: number; age: number | null } {
   const age = ageDays(asOf, protocol.listed_at);
   const value = valueIfLaunches(protocol.tvl_usd, fitted.curve);
-  const { odds, bucketRate, categoryRate } = launchOdds(protocol, asOf, fitted.odds);
+  const { odds, bucketRate, categoryRate, survivorRate: surv, bucketOdds } = launchOdds(protocol, asOf, fitted.odds);
   return {
     valueIfLaunches: value,
     odds,
     bucketRate,
     categoryRate,
+    survivorRate: surv,
+    bucketOdds,
     implied: Math.max(1, Math.round(value * odds)),
     age,
   };
@@ -673,8 +848,9 @@ export function impliedValue(
 
 /**
  * The full fitted model from the snapshot: the Huber size curve over the comp set, the odds
- * parameters, and placeholder band factors (lib/validate.ts fills the real ones from the
- * leave-one-out misses before the board is built).
+ * parameters (bucket rates, shrunk category rates and the Weibull survivor fit), and
+ * placeholder band factors (lib/validate.ts fills the real ones from the leave-one-out
+ * misses before the board is built).
  */
 export function fitModel(snapshot: Snapshot): FittedModel {
   const comps = compSet(snapshot);
@@ -688,6 +864,24 @@ export function fitModel(snapshot: Snapshot): FittedModel {
 export function gasPerTx(protocol: SnapshotProtocol): number {
   const first = protocol.chains[0]?.toLowerCase() ?? '';
   return GAS_BY_CHAIN[first] ?? GAS_DEFAULT_USD;
+}
+
+/** One assumption the farm sensitivity grid changes at a time (lib/validate.ts). */
+export interface FarmOverrides {
+  /** Hold days outright (default: 60 when under 180 days old, else 90). */
+  holdDays?: number;
+  /** Forgone yield rate (default 0.04). */
+  forgoneRate?: number;
+  /** Bridge/withdraw allowance in dollars (default 1.50). */
+  bridgeUsd?: number;
+  /** Multiplier on the per-transaction gas (default 1). */
+  gasMult?: number;
+  /** Charge no weekly transaction (default false: one tx per week). */
+  noWeeklyTx?: boolean;
+  /** Time-share denominator mode: age/2 (default), age/1, or age/4. */
+  timeShareMode?: 'half' | 'one' | 'quarter';
+  /** Use the radar-4 verdict rule (FARM iff break-even odds <= 0.10) instead of the net rule. */
+  oldRule?: boolean;
 }
 
 /**
@@ -705,10 +899,12 @@ export function gasPerTx(protocol: SnapshotProtocol): number {
  *   pays_from = the ticket at which the per-dollar slice first covers the forgone rate
  *               plus the fees, or null when no ticket pays
  *   break_even_odds = (fees + forgone) / slice_if_launches
- *   verdict   = FARM when break-even odds <= 0.10, THIN when <= 0.33, else SKIP
+ *   verdict   = FARM when the expected net is positive (odds > break-even odds),
+ *               THIN when break-even odds <= 0.33, else SKIP
  *
- * The verdict uses the break-even odds, not the net: a plan that nets positive only at a
- * huge ticket is THIN, not FARM. The dashboard recomputes this live for every ticket.
+ * The verdict uses the expected net, not the break-even threshold: a plan that nets
+ * positive at the row's own odds is worth farming, and a plan that nets negative is not,
+ * however low its break-even odds. The dashboard recomputes this live for every ticket.
  */
 export function farmEconomics(
   protocol: SnapshotProtocol,
@@ -717,25 +913,39 @@ export function farmEconomics(
   odds: number,
   ticket: number,
   share: number = AIRDROP_SHARE,
+  over: FarmOverrides = {},
 ): FarmEconomics {
   const age = ageDays(asOf, protocol.listed_at);
-  const holdDays = age !== null && age < 180 ? 60 : 90;
+  const holdDays = over.holdDays ?? (age !== null && age < 180 ? 60 : 90);
   const weeks = Math.floor(holdDays / 7);
   const ageForShare = age ?? 365;
-  const timeShare = holdDays / (ageForShare / 2 + holdDays);
-  const nTx = 5 + weeks;
-  const feesUsd = nTx * gasPerTx(protocol) + FEE_ALLOWANCE_USD;
+  const denomAge = over.timeShareMode === 'one' ? ageForShare : over.timeShareMode === 'quarter' ? ageForShare / 4 : ageForShare / 2;
+  const timeShare = holdDays / (denomAge + holdDays);
+  const gas = gasPerTx(protocol) * (over.gasMult ?? 1);
+  const nTx = over.noWeeklyTx ? 5 : 5 + weeks;
+  const feesUsd = nTx * gas + (over.bridgeUsd ?? FEE_ALLOWANCE_USD);
   const hours = (35 + 10 * weeks + 15) / 60;
-  const forgoneUsd = ticket * FORGONE_RATE * holdDays / 365;
+  const forgoneRate = over.forgoneRate ?? FORGONE_RATE;
+  const forgoneUsd = ticket * forgoneRate * holdDays / 365;
   const sliceIfLaunchesUsd = (share * valueIfLaunchesUsd * ticket) / protocol.tvl_usd * timeShare;
   const sliceExpectedUsd = sliceIfLaunchesUsd * odds;
   const netUsd = sliceExpectedUsd - feesUsd - forgoneUsd;
   const netPerHourUsd = netUsd / hours;
   const breakEvenOdds = sliceIfLaunchesUsd > 0 ? (feesUsd + forgoneUsd) / sliceIfLaunchesUsd : Number.POSITIVE_INFINITY;
-  const verdict: FarmEconomics['verdict'] = breakEvenOdds <= FARM_BE_MAX ? 'FARM' : breakEvenOdds <= THIN_BE_MAX ? 'THIN' : 'SKIP';
+  const verdict: FarmEconomics['verdict'] = over.oldRule
+    ? breakEvenOdds <= 0.1
+      ? 'FARM'
+      : breakEvenOdds <= THIN_BE_MAX
+        ? 'THIN'
+        : 'SKIP'
+    : netUsd > 0
+      ? 'FARM'
+      : breakEvenOdds <= THIN_BE_MAX
+        ? 'THIN'
+        : 'SKIP';
   // The per-dollar expected slice, net of the forgone rate: the ticket at which the fees
   // are covered is fees / (per-dollar net). Null when the per-dollar net is not positive.
-  const perDollarNet = (share * valueIfLaunchesUsd) / protocol.tvl_usd * timeShare * odds - FORGONE_RATE * holdDays / 365;
+  const perDollarNet = (share * valueIfLaunchesUsd) / protocol.tvl_usd * timeShare * odds - forgoneRate * holdDays / 365;
   const paysFromUsd = perDollarNet > 0 ? Math.ceil(feesUsd / perDollarNet) : null;
   return {
     ticket,
@@ -903,9 +1113,9 @@ export function buildBoard(
   for (const p of belowFloor) chosen.set(p.slug, { protocol: p, list: 'early' });
 
   const scored = [...chosen.values()].map(({ protocol, list }) => {
-    const { valueIfLaunches: value, odds, bucketRate, categoryRate, implied, age } = impliedValue(protocol, snapshot.as_of, fitted);
+    const { valueIfLaunches: value, odds, bucketRate, categoryRate, survivorRate: surv, bucketOdds, implied, age } = impliedValue(protocol, snapshot.as_of, fitted);
     const econ = farmEconomics(protocol, snapshot.as_of, value, odds, DEFAULT_TICKET);
-    return { protocol, list, value, odds, bucketRate, categoryRate, implied, age, econ };
+    return { protocol, list, value, odds, bucketRate, categoryRate, survivorRate: surv, bucketOdds, implied, age, econ };
   });
   scored.sort((a, b) => b.implied - a.implied || a.protocol.slug.localeCompare(b.protocol.slug));
 
@@ -943,6 +1153,8 @@ export function buildBoard(
         category_rate: s.categoryRate,
         odds: s.odds,
         age_days: s.age,
+        survivor_rate: s.survivorRate,
+        bucket_odds: s.bucketOdds,
       },
       nearest_comps: nearestComps(s.protocol, comps, fitted.curve),
       farm: s.econ,
@@ -1045,6 +1257,14 @@ export function boardIssue(board: BoardRow[], snapshot: Snapshot): string | null
     }
     if (!Number.isFinite(row.farm.breakEvenOdds)) return `${row.slug} has a non-finite break-even odds`;
     if (!['FARM', 'THIN', 'SKIP'].includes(row.farm.verdict)) return `${row.slug} has verdict ${row.farm.verdict}`;
+    // The radar-5 verdict rule, audited on the board itself: FARM means the expected net
+    // is positive at the row's odds, and a THIN row's net is not positive.
+    if (row.farm.verdict === 'FARM' && !(row.farm.netUsd > 0)) {
+      return `${row.slug} is FARM with net $${row.farm.netUsd.toFixed(2)}: the verdict rule says FARM iff net > 0`;
+    }
+    if (row.farm.verdict === 'THIN' && row.farm.netUsd > 0) {
+      return `${row.slug} is THIN with net $${row.farm.netUsd.toFixed(2)}: a positive net is FARM`;
+    }
   }
   return null;
 }

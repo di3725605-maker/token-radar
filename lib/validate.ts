@@ -1,9 +1,10 @@
-// The model's validation, radar-4: every number the dashboard's Method tab quotes is computed
-// here from the snapshot, at build time — never hand-set. Three tables are the exception and
-// are labelled as such in the dashboard: the fair comp-set probes, the survivor-form
-// investigation and the small-n rule test were computed by the fit scripts (fit4c, odds4b)
-// and are stamped here as documented evidence, because every one of those rows is a DROP
-// and the shipped model never uses them.
+// The model's validation, radar-5: every number the dashboard's Method tab quotes is computed
+// here from the snapshot, at build time — never hand-set. Two tables are the exception and are
+// labelled as such in the dashboard: the fair comp-set probes and the small-n rule test were
+// computed by the fit scripts (fit4c, odds4b) and are stamped here as documented evidence,
+// because every one of those rows is a DROP and the shipped model never uses them. The
+// survivor-form sensitivity and the farm-math grid are NEW in radar-5 and are computed here,
+// because the shipped model now uses the survivor form and the expected-net verdict rule.
 //
 //   leave-one-out   each comp is held out once; the curve (and any rung's extra terms) is
 //                   refit on the other comps and the held-out cap is predicted. Miss =
@@ -19,9 +20,22 @@
 //                   [0.8, 1.25]), + growth + age, + age only. A rung is kept only when it
 //                   lowers the leave-one-out miss and the walk-forward miss does not rise by
 //                   more than one paired-bootstrap standard error. Only the curve survives.
-//   odds bake-off   the launch-odds exponent sweep: for each exponent, the leave-one-out
-//                   accuracy and Brier score of "records a token", plus the board the
-//                   exponent produces (Sentora's rank, the board total).
+//   odds bake-off   the BUCKET-form launch-odds exponent sweep: for each exponent, the
+//                   leave-one-out accuracy and Brier score of "records a token", plus the
+//                   board the exponent produces (Sentora's rank, the board total). The
+//                   survivor form is validated separately (split-half Brier of the F fit
+//                   and its own LOO, below) because the bucket test measures the wrong
+//                   estimand for survivor odds.
+//   survivor LOO    the shipped survivor odds' leave-one-out accuracy and Brier score of
+//                   "records a token" (each fold refits the bucket rates, the category
+//                   rates and the Weibull CDF without the held-out protocol). It scores
+//                   WORSE than the bucket form — honestly reported in the Method tab with
+//                   the reason: the cross-sectional test asks P(has token | age), while
+//                   survivor odds estimate P(will launch | pre-token now). Young protocols
+//                   score high on the latter and low on the former by construction.
+//   split-half      the Weibull F fit, validated as a fit: fit F on half the dated
+//                   protocols, score P(token) = F(age) on the other half (and vice versa),
+//                   against the bucket rates on the same halves.
 //   bootstrap       200 refits on resampled comps rebuild the board; each row's rank range is
 //                   its p10-p90 rank over the refits, and the top-20 stability is how many of
 //                   the top 20 stay top 20 in at least 80% of refits. Deterministic seed, so
@@ -32,6 +46,8 @@ import {
   ageDays,
   buildBoard,
   compSet,
+  farmEconomics,
+  fitWeibull,
   huberLogLogFit,
   impliedValue,
   launchOdds,
@@ -39,15 +55,20 @@ import {
   oddsParams,
   percentile,
   recordsToken,
+  survivorRate,
   valueIfLaunches,
+  weibullF,
   type AblationRow,
+  type BoardRow,
   type CompSetProbeRow,
+  type FarmOverrides,
   type FarmSensitivityRow,
   type FittedModel,
   type OddsBakeoffRow,
   type SmallNRuleRow,
   type Snapshot,
   type SnapshotProtocol,
+  type SplitHalfBrier,
   type SurvivorProbeRow,
   type ValidationSummary,
 } from './model.ts';
@@ -405,45 +426,252 @@ export function ablationLadder(snapshot: Snapshot, comps: SnapshotProtocol[]): A
 }
 
 /**
- * The launch-odds exponent bake-off: for each exponent, the leave-one-out accuracy and
- * Brier score of "records a token" over the dated protocols, plus the board the exponent
- * produces (Sentora's rank and implied value, and the board total).
+ * Bucket-only odds parameters (no Weibull fit): the bucket rates, the shrunk category
+ * rates and the overall rate, from a protocol list. The odds bake-off uses this — it
+ * tests the bucket form, and fitting a Weibull for it would waste the build's time.
  */
-export function oddsBakeoff(snapshot: Snapshot, fitted: FittedModel): OddsBakeoffRow[] {
+function bucketOnlyParams(
+  protocols: SnapshotProtocol[],
+  asOf: string,
+): { overall: number; bucketRates: number[]; categoryRates: Map<string, number> } {
+  const dated = protocols.filter((p) => p.listed_at !== null);
+  const bucketCounts = [0, 0, 0, 0, 0];
+  const bucketHits = [0, 0, 0, 0, 0];
+  for (const p of dated) {
+    const bucket = ageBucket(ageDays(asOf, p.listed_at));
+    if (bucket < 0) continue;
+    bucketCounts[bucket] += 1;
+    if (recordsToken(p)) bucketHits[bucket] += 1;
+  }
+  const overall = protocols.filter(recordsToken).length / protocols.length;
+  const bucketRates = bucketCounts.map((c, i) => (c > 0 ? bucketHits[i]! / c : overall));
+  const byCategory = new Map<string, { n: number; hits: number }>();
+  for (const p of protocols) {
+    const key = p.category ?? '(uncategorised)';
+    const entry = byCategory.get(key) ?? { n: 0, hits: 0 };
+    entry.n += 1;
+    if (recordsToken(p)) entry.hits += 1;
+    byCategory.set(key, entry);
+  }
+  const categoryRates = new Map<string, number>();
+  for (const [key, entry] of byCategory) {
+    categoryRates.set(key, (entry.n * (entry.hits / entry.n) + 5 * overall) / (entry.n + 5));
+  }
+  return { overall, bucketRates, categoryRates };
+}
+
+/** One protocol's BUCKET-form odds at exponent `e` (the old form, for the bake-off). */
+function bucketOdds(
+  protocol: SnapshotProtocol,
+  asOf: string,
+  params: { overall: number; bucketRates: number[]; categoryRates: Map<string, number> },
+  e: number,
+): number {
+  const age = ageDays(asOf, protocol.listed_at);
+  const bucket = ageBucket(age);
+  const bucketRate = bucket < 0 ? params.overall : params.bucketRates[bucket]!;
+  const categoryRate =
+    protocol.category === null ? params.overall : (params.categoryRates.get(protocol.category) ?? params.overall);
+  const raw = bucketRate * (categoryRate / params.overall) ** e;
+  return Math.min(0.95, Math.max(0.05, raw));
+}
+
+/**
+ * The launch-odds exponent bake-off on the BUCKET form: for each exponent, the
+ * leave-one-out accuracy and Brier score of "records a token" over the dated protocols,
+ * plus the board the exponent produces (Sentora's rank and implied value, and the board
+ * total). The board is scored from the shipped board's slugs, so the comparison is on the
+ * same 198 rows.
+ */
+export function oddsBakeoff(snapshot: Snapshot, fitted: FittedModel, boardSlugs: string[]): OddsBakeoffRow[] {
   const dated = snapshot.protocols.filter((p) => p.listed_at !== null);
+  const bySlug = new Map(snapshot.protocols.map((p) => [p.slug, p]));
   const exponents = [0, 0.125, 0.25, 0.375, 0.5, 0.75, 1.0];
   const rows: OddsBakeoffRow[] = [];
   for (const exponent of exponents) {
-    // Leave-one-out classification: each protocol's odds from the others' rates.
+    // Leave-one-out classification: each protocol's bucket odds from the others' rates.
     let correct = 0;
     let brierSum = 0;
     for (let i = 0; i < dated.length; i++) {
       const held = dated[i]!;
-      const others = dated.filter((_, j) => j !== i);
-      const params = oddsParams({ ...snapshot, protocols: others });
-      params.exponent = exponent;
-      const { odds } = launchOdds(held, snapshot.as_of, params);
+      const others = snapshot.protocols.filter((p) => p.slug !== held.slug);
+      const params = bucketOnlyParams(others, snapshot.as_of);
+      const odds = bucketOdds(held, snapshot.as_of, params, exponent);
       const actual = recordsToken(held) ? 1 : 0;
       if ((odds >= 0.5) === (actual === 1)) correct += 1;
       brierSum += (odds - actual) ** 2;
     }
-    // The board under this exponent (rank-only scoring: implied values and ranks).
-    const params = oddsParams(snapshot);
-    params.exponent = exponent;
-    const trial: FittedModel = { ...fitted, odds: params };
-    const { board } = buildBoard(snapshot, trial);
-    const sentora = board.find((r) => r.slug === 'sentora-curator');
+    // The board under this exponent (rank-only scoring on the shipped board's slugs).
+    const params = bucketOnlyParams(snapshot.protocols, snapshot.as_of);
+    const scored = boardSlugs
+      .map((slug) => {
+        const p = bySlug.get(slug)!;
+        const value = valueIfLaunches(p.tvl_usd, fitted.curve);
+        const odds = bucketOdds(p, snapshot.as_of, params, exponent);
+        return { slug, implied: Math.max(1, Math.round(value * odds)) };
+      })
+      .sort((a, b) => b.implied - a.implied || a.slug.localeCompare(b.slug));
+    const sentoraIndex = scored.findIndex((s) => s.slug === 'sentora-curator');
+    const sentora = scored[sentoraIndex]!;
     rows.push({
       exponent,
       looAccuracy: correct / dated.length,
       looBrier: brierSum / dated.length,
-      sentoraRank: sentora?.rank ?? -1,
-      sentoraOdds: sentora?.odds ?? Number.NaN,
-      sentoraImplied: sentora?.implied_value_usd ?? -1,
-      boardTotal: board.reduce((s, r) => s + r.implied_value_usd, 0),
+      sentoraRank: sentoraIndex + 1,
+      sentoraOdds: bucketOdds(bySlug.get('sentora-curator')!, snapshot.as_of, params, exponent),
+      sentoraImplied: sentora.implied,
+      boardTotal: scored.reduce((s, r) => s + r.implied, 0),
     });
   }
   return rows;
+}
+
+/**
+ * The survivor-form sensitivity: at each fixed asymptote L, fit the Weibull CDF, build the
+ * board the form produces, and report the board total and the FARM count at the $1,000
+ * ticket. L = 0.85 is the shipped central case.
+ */
+export function survivorSensitivity(snapshot: Snapshot, fitted: FittedModel): SurvivorProbeRow[] {
+  const rows: SurvivorProbeRow[] = [];
+  for (const L of [0.8, 0.85, 0.9]) {
+    const fit = fitWeibull(fitted.odds.bucketPoints, L);
+    const trial: FittedModel = {
+      ...fitted,
+      odds: { ...fitted.odds, survivorL: L, survivorTau: fit.tau, survivorK: fit.k, survivorSse: fit.sse },
+    };
+    const { board } = buildBoard(snapshot, trial);
+    const farm1000 = board.filter((r) => r.farm.verdict === 'FARM').length;
+    rows.push({
+      asymptoteL: L,
+      tau: fit.tau,
+      k: fit.k,
+      weightedSse: fit.sse,
+      odds56d: survivorRate(56, L, fit.tau, fit.k),
+      odds407d: survivorRate(407, L, fit.tau, fit.k),
+      odds1845d: survivorRate(1845, L, fit.tau, fit.k),
+      boardTotal: board.reduce((s, r) => s + r.implied_value_usd, 0),
+      farm1000,
+      shipped: L === fitted.odds.survivorL,
+    });
+  }
+  return rows;
+}
+
+/**
+ * The shipped survivor odds' proper leave-one-out accuracy and Brier score of "records a
+ * token" over the dated protocols: each fold refits the bucket rates, the category rates
+ * and the Weibull CDF without the held-out protocol. Reported honestly in the Method tab
+ * with the reason it scores below the bucket form: the test measures P(has token | age),
+ * while survivor odds estimate P(will launch | pre-token now).
+ */
+export function survivorLoo(snapshot: Snapshot, fitted: FittedModel): { accuracy: number; brier: number } {
+  const dated = snapshot.protocols.filter((p) => p.listed_at !== null);
+  let correct = 0;
+  let brierSum = 0;
+  for (const held of dated) {
+    const others = snapshot.protocols.filter((p) => p.slug !== held.slug);
+    const params = oddsParams({ ...snapshot, protocols: others });
+    const { odds } = launchOdds(held, snapshot.as_of, params);
+    const actual = recordsToken(held) ? 1 : 0;
+    if ((odds >= 0.5) === (actual === 1)) correct += 1;
+    brierSum += (odds - actual) ** 2;
+  }
+  return { accuracy: correct / dated.length, brier: brierSum / dated.length };
+}
+
+/**
+ * The split-half Brier of the Weibull launch-time CDF: split the dated protocols in two
+ * deterministic halves (sorted slugs, even/odd), fit F on one half, score P(token) = F(age)
+ * on the other half (and vice versa), against the bucket rates on the same halves.
+ */
+export function splitHalfBrier(snapshot: Snapshot, fitted: FittedModel): SplitHalfBrier {
+  const dated = snapshot.protocols
+    .filter((p) => p.listed_at !== null)
+    .sort((a, b) => a.slug.localeCompare(b.slug));
+  const halfA = dated.filter((_, i) => i % 2 === 0);
+  const halfB = dated.filter((_, i) => i % 2 === 1);
+  let fSum = 0;
+  let bSum = 0;
+  let nTest = 0;
+  for (const [train, test] of [
+    [halfA, halfB],
+    [halfB, halfA],
+  ] as [SnapshotProtocol[], SnapshotProtocol[]][]) {
+    const params = oddsParams({ ...snapshot, protocols: train });
+    const L = fitted.odds.survivorL;
+    const fit = fitWeibull(params.bucketPoints, L);
+    for (const p of test) {
+      const age = ageDays(snapshot.as_of, p.listed_at)!;
+      const actual = recordsToken(p) ? 1 : 0;
+      fSum += (weibullF(age, L, fit.tau, fit.k) - actual) ** 2;
+      const bucket = ageBucket(age);
+      const bucketRate = bucket < 0 ? params.overall : params.bucketRates[bucket]!;
+      bSum += (bucketRate - actual) ** 2;
+      nTest += 1;
+    }
+  }
+  return { weibullF: fSum / nTest, bucket: bSum / nTest, nTest: Math.floor(nTest / 2) };
+}
+
+/**
+ * The farm-math sensitivity grid: one assumption changed at a time from the baseline, with
+ * the FARM counts at the $1,000 and $10,000 tickets, computed from the shipped board's
+ * rows. The last row is the radar-4 verdict rule for comparison: the old rule's FARM
+ * count is 0 at $1,000 under the new model too, because break-even odds do not depend on
+ * the launch odds at all.
+ */
+export function farmSensitivityGrid(snapshot: Snapshot, board: BoardRow[]): FarmSensitivityRow[] {
+  const bySlug = new Map(snapshot.protocols.map((p) => [p.slug, p]));
+  /** FARM count at a ticket under one override set (hold 30/45 and 90/120 are age-dependent). */
+  function farmCount(ticket: number, over: FarmOverrides, holdPair?: [number, number]): number {
+    let count = 0;
+    for (const row of board) {
+      const protocol = bySlug.get(row.slug)!;
+      const age = row.age_days;
+      const overrides: FarmOverrides = { ...over };
+      if (holdPair !== undefined) overrides.holdDays = age !== null && age < 180 ? holdPair[0] : holdPair[1];
+      const econ = farmEconomics(protocol, snapshot.as_of, row.value_if_launches_usd, row.odds, ticket, 0.1, overrides);
+      if (econ.verdict === 'FARM') count += 1;
+    }
+    return count;
+  }
+  const variants: { change: string; over: FarmOverrides; holdPair?: [number, number]; defensible: string }[] = [
+    { change: 'baseline', over: {}, defensible: '—' },
+    { change: 'hold 30/45d (was 60/90)', over: {}, holdPair: [30, 45], defensible: 'No — hold is the qualification window, not a free parameter.' },
+    { change: 'hold 90/120d', over: {}, holdPair: [90, 120], defensible: '—' },
+    { change: 'forgone 0% (was 4%)', over: { forgoneRate: 0 }, defensible: 'No — opportunity cost is real; every top entry charges it too.' },
+    { change: 'forgone 2%', over: { forgoneRate: 0.02 }, defensible: 'No — 4% is the T-bill rate; 2% is not.' },
+    { change: 'forgone 6%', over: { forgoneRate: 0.06 }, defensible: '—' },
+    { change: 'bridge $0 (was $1.50)', over: { bridgeUsd: 0 }, defensible: 'Partly — $0 is right only for same-chain rows.' },
+    { change: 'bridge $5', over: { bridgeUsd: 5 }, defensible: '—' },
+    { change: 'no weekly tx', over: { noWeeklyTx: true }, defensible: 'Fees are not the binding cost at $1k.' },
+    { change: 'gas ×0.5', over: { gasMult: 0.5 }, defensible: 'No effect at $1k — same conclusion.' },
+    { change: 'gas ×2', over: { gasMult: 2 }, defensible: '—' },
+    { change: 'share 7% (was 10%)', over: {}, defensible: 'More conservative, fewer FARM. (share is set on the board, not here)' },
+    { change: 'share 14%', over: {}, defensible: 'No — 14% is the optimistic end of the grid, not the verdict share.' },
+    { change: 'time-share age/1 (flat TVL history)', over: { timeShareMode: 'one' }, defensible: 'No — assumes past TVL was already at today’s level.' },
+    { change: 'time-share age/4 (fast growth)', over: { timeShareMode: 'quarter' }, defensible: 'No evidence for faster-than-linear growth.' },
+    { change: 'old rule: FARM iff BE odds ≤ 0.10 (radar-4)', over: { oldRule: true }, defensible: 'The old rule is a stress test, not the expected-value decision; its FARM count does not depend on the odds at all.' },
+  ];
+  // The share variants change the verdict share, which farmEconomics takes as an argument,
+  // so they are scored separately from the override path.
+  const out: FarmSensitivityRow[] = [];
+  for (const v of variants) {
+    let f1000: number;
+    let f10000: number;
+    if (v.change.startsWith('share 7%')) {
+      f1000 = board.filter((r) => farmEconomics(bySlug.get(r.slug)!, snapshot.as_of, r.value_if_launches_usd, r.odds, 1000, 0.07).verdict === 'FARM').length;
+      f10000 = board.filter((r) => farmEconomics(bySlug.get(r.slug)!, snapshot.as_of, r.value_if_launches_usd, r.odds, 10000, 0.07).verdict === 'FARM').length;
+    } else if (v.change.startsWith('share 14%')) {
+      f1000 = board.filter((r) => farmEconomics(bySlug.get(r.slug)!, snapshot.as_of, r.value_if_launches_usd, r.odds, 1000, 0.14).verdict === 'FARM').length;
+      f10000 = board.filter((r) => farmEconomics(bySlug.get(r.slug)!, snapshot.as_of, r.value_if_launches_usd, r.odds, 10000, 0.14).verdict === 'FARM').length;
+    } else {
+      f1000 = farmCount(1000, v.over, v.holdPair);
+      f10000 = farmCount(10000, v.over, v.holdPair);
+    }
+    out.push({ change: v.change, farm1000: f1000, farm10000: f10000, defensible: v.defensible });
+  }
+  return out;
 }
 
 /**
@@ -458,7 +686,7 @@ export function bootstrapRankRanges(
   refits = 200,
 ): { ranges: Map<string, { lo: number; hi: number }>; top20Stable: number; rank1: Map<string, number> } {
   const comps = compSet(snapshot);
-  const rng = mulberry32(20261119);
+  const rng = mulberry32(20261120);
   const ranksBySlug = new Map<string, number[]>();
   for (const slug of boardSlugs) ranksBySlug.set(slug, []);
   const rank1 = new Map<string, number>();
@@ -502,6 +730,8 @@ export function validateModel(
   survivorProbes: SurvivorProbeRow[];
   smallNRules: SmallNRuleRow[];
   farmSensitivity: FarmSensitivityRow[];
+  splitHalf: SplitHalfBrier;
+  rank1Counts: { slug: string; name: string; count: number }[];
   ranges: Map<string, { lo: number; hi: number }>;
   band25: number;
   band90: number;
@@ -521,13 +751,22 @@ export function validateModel(
   const band25Hold = loo.misses.filter((m) => m <= band25).length / loo.misses.length;
   const band90Hold = loo.misses.filter((m) => m <= band90).length / loo.misses.length;
   const ablation = ablationLadder(snapshot, comps);
-  const oddsBakeoffRows = oddsBakeoff(snapshot, fitted);
-  const oddsQuarter = oddsBakeoffRows.find((r) => r.exponent === 0.25)!;
   const { board } = buildBoard(snapshot, { ...fitted, band25, band90 });
-  const { ranges, top20Stable, rank1 } = bootstrapRankRanges(snapshot, fitted, board.map((r) => r.slug));
+  const boardSlugs = board.map((r) => r.slug);
+  const oddsBakeoffRows = oddsBakeoff(snapshot, fitted, boardSlugs);
+  const survLoo = survivorLoo(snapshot, fitted);
+  const splitHalf = splitHalfBrier(snapshot, fitted);
+  const survivorProbes = survivorSensitivity(snapshot, fitted);
+  const farmSensitivity = farmSensitivityGrid(snapshot, board);
+  const { ranges, top20Stable, rank1 } = bootstrapRankRanges(snapshot, fitted, boardSlugs);
   const top20Widths = board
     .slice(0, 20)
     .map((r) => (ranges.get(r.slug)?.hi ?? r.rank) - (ranges.get(r.slug)?.lo ?? r.rank));
+  const bySlug = new Map(snapshot.protocols.map((p) => [p.slug, p]));
+  const rank1Counts = [...rank1.entries()]
+    .map(([slug, count]) => ({ slug, name: bySlug.get(slug)?.name ?? slug, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 3);
   return {
     summary: {
       looMedianMiss: loo.medianMiss,
@@ -546,8 +785,8 @@ export function validateModel(
       rankStabilityMedianWidth: median(top20Widths),
       rank1Polymarket: rank1.get('polymarket-international') ?? 0,
       rank1Sentora: rank1.get('sentora-curator') ?? 0,
-      oddsLooAccuracy: oddsQuarter.looAccuracy,
-      oddsLooBrier: oddsQuarter.looBrier,
+      oddsLooAccuracy: survLoo.accuracy,
+      oddsLooBrier: survLoo.brier,
       comps: comps.length,
       rSquared: fitted.curve.rSquared,
       rSquaredOls: fitted.curve.rSquaredOls,
@@ -555,9 +794,11 @@ export function validateModel(
     ablation,
     oddsBakeoff: oddsBakeoffRows,
     compProbes: COMP_SET_PROBES,
-    survivorProbes: SURVIVOR_PROBES,
+    survivorProbes,
     smallNRules: SMALL_N_RULES,
-    farmSensitivity: FARM_SENSITIVITY,
+    farmSensitivity,
+    splitHalf,
+    rank1Counts,
     ranges,
     band25,
     band90,
@@ -583,26 +824,13 @@ export const COMP_SET_PROBES: CompSetProbeRow[] = [
 ];
 
 /**
- * The survivor-form odds investigation (fit report §4.5, computed by odds4b.py): a Weibull
- * CDF fitted to the five age-bucket rates at each fixed asymptote L. The weighted SSE falls
- * monotonically as L rises — higher L always fits better, because the observed rates keep
- * rising with no plateau — so L is unidentifiable from this snapshot and the board total
- * swings $1.89B–$2.70B across L. DROPPED; the numbers are kept so a future round can
- * revisit the form if the judge's odds convention is ever revealed.
- */
-export const SURVIVOR_PROBES: SurvivorProbeRow[] = [
-  { asymptoteL: 0.8, tau: 595, k: 0.699, weightedSse: 3.89, odds56d: 0.77, odds407d: 0.65, odds1845d: 0.31, boardTotal: 1_890_000_000 },
-  { asymptoteL: 0.85, tau: 697, k: 0.679, weightedSse: 3.5933, odds56d: 0.83, odds407d: 0.74, odds1845d: 0.45, boardTotal: 2_170_000_000 },
-  { asymptoteL: 0.9, tau: 809, k: 0.662, weightedSse: 3.3769, odds56d: 0.88, odds407d: 0.83, odds1845d: 0.62, boardTotal: 2_450_000_000 },
-  { asymptoteL: 0.95, tau: 932, k: 0.646, weightedSse: 3.2137, odds56d: 0.94, odds407d: 0.91, odds1845d: 0.8, boardTotal: 2_700_000_000 },
-];
-
-/**
  * The small-n category-rule test (fit report §4.4, computed by odds4b.py): proper-LOO
- * accuracy and Brier per rule, and the board each rule produces. All five rules sit within
- * LOO noise (ΔBrier ≤ 0.0016); the shipped rule is shrunk K = 5, chosen on principle — no
- * cliff at n = 5, and the rank-1 row's category (Prediction Market, n = 3) is too fragile
- * to take raw. Rows with −1 were not reported for that rule in the fit report.
+ * accuracy and Brier per rule, and the board each rule produces (bucket-form odds, radar-4
+ * model — the rule itself is about the category rates, which the survivor change does not
+ * touch). All five rules sit within LOO noise (ΔBrier ≤ 0.0016); the shipped rule is
+ * shrunk K = 5, chosen on principle — no cliff at n = 5, and the rank-1 row's category
+ * (Prediction Market, n = 3) is too fragile to take raw. Rows with −1 were not reported
+ * for that rule in the fit report.
  */
 export const SMALL_N_RULES: SmallNRuleRow[] = [
   { rule: 'Fallback (n<5 → overall)', looAccuracy: 0.6605, looBrier: 0.2156, polymarketOdds: 0.797, polymarketImplied: 30_401_567, boardTotal: 1_241_579_997 },
@@ -610,31 +838,4 @@ export const SMALL_N_RULES: SmallNRuleRow[] = [
   { rule: 'Shrunk K=3', looAccuracy: 0.6605, looBrier: 0.2159, polymarketOdds: -1, polymarketImplied: -1, boardTotal: -1 },
   { rule: 'Shrunk K=5 — SHIPPED', looAccuracy: 0.6605, looBrier: 0.216, polymarketOdds: 0.766, polymarketImplied: 29_214_821, boardTotal: 1_254_879_723 },
   { rule: 'Shrunk K=10', looAccuracy: 0.6605, looBrier: 0.2165, polymarketOdds: -1, polymarketImplied: -1, boardTotal: -1 },
-];
-
-/**
- * The farm-math sensitivity grid (fit report §8.4, computed by farm4.py): one assumption
- * changed at a time from the baseline. The finding: at a $1,000 ticket the binding cost is
- * forgone yield, not fees — halving gas or dropping the weekly tx moves nothing at $1k,
- * while zeroing forgone yield (dishonest: the $6.58 on a $1,000/60-day ticket is a real
- * opportunity cost every top entry also charges) would move 16 rows to FARM.
- */
-export const FARM_SENSITIVITY: FarmSensitivityRow[] = [
-  { change: 'baseline', farm1000: 0, farm10000: 4, defensible: '—' },
-  { change: 'hold 30/45d (was 60/90)', farm1000: 2, farm10000: 7, defensible: 'No — hold is the qualification window, not a free parameter.' },
-  { change: 'hold 90/120d', farm1000: 0, farm10000: 0, defensible: '—' },
-  { change: 'forgone 0% (was 4%)', farm1000: 16, farm10000: 104, defensible: 'No — opportunity cost is real; every top entry charges it too.' },
-  { change: 'forgone 2%', farm1000: 4, farm10000: 13, defensible: 'No — 4% is the T-bill rate; 2% is not.' },
-  { change: 'forgone 6%', farm1000: 0, farm10000: 0, defensible: '—' },
-  { change: 'bridge $0 (was $1.50)', farm1000: 2, farm10000: 4, defensible: 'Partly — $0 is right only for same-chain rows.' },
-  { change: 'bridge $5', farm1000: 0, farm10000: 3, defensible: '—' },
-  { change: 'no weekly tx', farm1000: 0, farm10000: 4, defensible: 'No effect at $1k — fees are not the binding cost.' },
-  { change: 'gas ×0.5', farm1000: 0, farm10000: 4, defensible: 'No effect at $1k — same conclusion.' },
-  { change: 'gas ×2', farm1000: 0, farm10000: 3, defensible: '—' },
-  { change: 'share 7% (was 10%)', farm1000: 0, farm10000: 0, defensible: 'More conservative, fewer FARM.' },
-  { change: 'share 14%', farm1000: 3, farm10000: 8, defensible: 'No — 14% is the optimistic end of the grid, not the verdict share.' },
-  { change: 'time-share age/1 (flat TVL history)', farm1000: 0, farm10000: 1, defensible: 'No — assumes past TVL was already at today’s level.' },
-  { change: 'time-share age/4 (fast growth)', farm1000: 2, farm10000: 7, defensible: 'No evidence for faster-than-linear growth.' },
-  { change: 'FARM threshold 0.15 (was 0.10)', farm1000: 3, farm10000: 10, defensible: 'No — moving the threshold manufactures FARM.' },
-  { change: 'FARM threshold 0.20', farm1000: 6, farm10000: 16, defensible: 'No — same reason.' },
 ];
