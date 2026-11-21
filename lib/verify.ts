@@ -1,106 +1,57 @@
-// Independent verification for the radar's board and its written output.
-//
-// boardIssue in lib/model.ts answers the gate's shape; this module answers
-// the questions it does not ask. Before anything is written, verifyBoard
-// checks that every slug is real and used once, that the board is the right
-// size, that the trimmed farm steps fit the gate, that every row's age
-// matches the snapshot, that no row claims more than the gate's value
-// cap, and that every FARM verdict really nets positive (the radar-5 rule).
-// After writing, verifyWritten reads the files back and checks they
-// landed, parse, and match the board that was written. main.ts refuses to
-// hand in a board that fails either pass, so a bad board fails here with a
-// plain message instead of failing the gate on the server.
+import {readFileSync, statSync} from 'node:fs';
+import {join} from 'node:path';
+import {ageDays, disposition, hasToken, rankedLabel, type BoardRow, type Ledger, type RadarData, type Snapshot} from './model.ts';
 
-import { existsSync, readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
-import { ageDays, isPreToken, type BoardRow, type Snapshot } from './model.ts';
-
-/** Gate bounds for board.json, from the competition's rules. */
-const MIN_ROWS = 100;
-const MAX_ROWS = 4_000;
-const MAX_IMPLIED_VALUE_USD = 100_000_000_000_000;
-const MAX_DOSSIER_BYTES = 1_572_864;
-
-/** The board's own checks, beyond the gate-shape check in boardIssue. */
-export function verifyBoard(board: BoardRow[], snapshot: Snapshot): string | null {
-  if (board.length < MIN_ROWS) return `the board holds ${board.length} rows, under the ${MIN_ROWS} minimum`;
-  if (board.length > MAX_ROWS) return `the board holds ${board.length} rows, over the ${MAX_ROWS} maximum`;
-
-  const known = new Map(snapshot.protocols.map((p) => [p.slug, p]));
-  const seen = new Set<string>();
-  for (const row of board) {
-    if (seen.has(row.slug)) return `${row.slug} appears twice on the board`;
-    seen.add(row.slug);
-    const protocol = known.get(row.slug);
-    if (protocol === undefined) return `${row.slug} is not one of the snapshot's protocols`;
-    if (row.name.trim().length === 0) return `${row.slug} has an empty name`;
-    if (row.token_status !== 'pre-token') return `${row.slug} is marked ${row.token_status}, not pre-token`;
-    if (!isPreToken(protocol)) return `${row.slug} records a token in the snapshot, so it cannot sit on the pre-token board`;
-    const age = ageDays(snapshot.as_of, protocol.listed_at);
-    if (row.age_days !== age) return `${row.slug} claims ${row.age_days} days old, the snapshot says ${age}`;
-    if (row.implied_value_usd > MAX_IMPLIED_VALUE_USD) {
-      return `${row.slug} claims $${row.implied_value_usd}, over the $${MAX_IMPLIED_VALUE_USD} cap`;
-    }
-    if (row.odds < 0.05 || row.odds > 0.95) return `${row.slug} has odds ${row.odds}, outside [0.05, 0.95]`;
-    if (row.value_if_launches_usd <= 0) return `${row.slug} has a non-positive value if it launches`;
-    if (!(row.band_p10_usd <= row.band_p25_usd && row.band_p25_usd <= row.implied_value_usd && row.implied_value_usd <= row.band_p75_usd && row.band_p75_usd <= row.band_p90_usd)) {
-      return `${row.slug} has bands out of order around $${row.implied_value_usd}`;
-    }
-    if (row.rank_range_lo < 1 || row.rank_range_hi > board.length || row.rank_range_lo > row.rank_range_hi) {
-      return `${row.slug} has rank range ${row.rank_range_lo}-${row.rank_range_hi}, outside the board`;
-    }
-    if (!Number.isFinite(row.farm.netUsd) || !Number.isFinite(row.farm.breakEvenOdds)) {
-      return `${row.slug} has non-finite farm economics`;
-    }
-    if (!['FARM', 'THIN', 'SKIP'].includes(row.farm.verdict)) return `${row.slug} has verdict ${row.farm.verdict}`;
-    // The radar-5 verdict rule, checked independently of the builder: a FARM row must
-    // net positive at its own odds, and a THIN row must not.
-    if (row.farm.verdict === 'FARM' && !(row.farm.netUsd > 0)) {
-      return `${row.slug} is FARM with net $${row.farm.netUsd.toFixed(2)}: FARM means net > 0`;
-    }
-    if (row.farm.verdict === 'THIN' && row.farm.netUsd > 0) {
-      return `${row.slug} is THIN with net $${row.farm.netUsd.toFixed(2)}: a positive net is FARM`;
-    }
-    if (row.nearest_comps.length === 0) return `${row.slug} has no nearest comps`;
-    for (const step of row.farm_steps) {
-      const trimmed = step.trim().length;
-      if (trimmed < 20 || trimmed > 600) return `${row.slug} has a farm step of ${trimmed} trimmed characters`;
-    }
-  }
-  return null;
+function requireThat(ok: unknown, problem: string): asserts ok {
+  if(!ok) throw Error(problem);
 }
-
-/** The written output's checks: the files landed, parse, and match the board. */
-export function verifyWritten(out: string, board: BoardRow[]): string | null {
-  try {
-    const boardPath = join(out, 'board.json');
-    if (!existsSync(boardPath)) return `board.json was not written to ${out}`;
-    const written = JSON.parse(readFileSync(boardPath, 'utf8')) as { rows?: BoardRow[] };
-    const rows = written.rows;
-    if (!Array.isArray(rows)) return `board.json holds no rows array`;
-    if (rows.length !== board.length) return `board.json holds ${rows.length} rows, the board has ${board.length}`;
-    if (rows.length > 0) {
-      if (rows[0]!.slug !== board[0]!.slug || rows[rows.length - 1]!.slug !== board[board.length - 1]!.slug) {
-        return `board.json does not match the board's first and last rows`;
-      }
-      for (let i = 0; i < rows.length; i++) {
-        if (rows[i]!.rank !== board[i]!.rank) return `board.json row ${i + 1} has rank ${rows[i]!.rank}, the board says ${board[i]!.rank}`;
-      }
-    }
-    const dataPath = join(out, 'data.js');
-    if (!existsSync(dataPath)) return `data.js was not written to ${out}`;
-    const data = readFileSync(dataPath, 'utf8');
-    if (!data.startsWith('window.RADAR=')) return `data.js does not start with the radar payload`;
-    if (!data.includes('"model_version":"radar-5"')) return `data.js does not carry the radar-5 model`;
-    if (!data.includes('"validation":')) return `data.js does not carry the validation summary`;
-    if (data.length < 100) return `data.js is only ${data.length} characters: the dashboard would render empty`;
-    const dossierPath = join(out, 'dossier.json');
-    if (!existsSync(dossierPath)) return `dossier.json was not written to ${out}`;
-    const dossierBytes = statSync(dossierPath).size;
-    if (dossierBytes > MAX_DOSSIER_BYTES) return `dossier.json is ${dossierBytes} bytes, over the ${MAX_DOSSIER_BYTES} cap`;
-    JSON.parse(readFileSync(dossierPath, 'utf8'));
-    return null;
-  } catch (error) {
-    return `the written output could not be read back: ${error instanceof Error ? error.message : String(error)}`;
+export function verifyBoard(s:Snapshot, rows:BoardRow[], ledger:Ledger, check:RadarData['reconciliation']) {
+  const source = new Map(s.protocols.map(p=>[p.slug,p]));
+  const seen = new Set<string>();
+  requireThat(rows.length>=100&&rows.length<=4000,'Board size outside 100–4000');
+  requireThat(check.status==='PASS'&&check.discrepancy===0&&source.size===s.protocols.length,'Reconciliation metadata or input identity failed');
+  const memberships=ledger.flatMap(g=>g.members.map(m=>[m.slug,g.label] as const));
+  const bySlug=new Map(memberships), ranked=new Set(memberships.filter(([,label])=>label===rankedLabel).map(([slug])=>slug));
+  requireThat(bySlug.size===source.size&&memberships.length===source.size&&
+    [...source.keys()].every(slug=>bySlug.has(slug))&&ledger.every(g=>g.count===g.members.length)&&
+    ranked.size===rows.length&&rows.every(r=>ranked.has(r.slug)), 'Ledger does not partition all snapshot identities');
+  requireThat(memberships.every(([slug,label])=>disposition(source.get(slug)!,ranked)===label),'Incorrect ledger disposition');
+  requireThat(check.universe===source.size&&check.ledger_total===memberships.length&&check.ledger_groups===ledger.length&&
+    check.ranked===rows.length&&check.exclusions_total===source.size-rows.length&&rows.length===198&&
+    (['watchlist','found','early'] as const).every((list,i)=>rows.filter(r=>r.list===list).length===[40,20,138][i]),'Coverage counters do not match the board and ledger');
+  requireThat(rows.some(r=>r.tvl_usd<s.floor_usd),'Missing early coverage');
+  rows.forEach((r,i)=>{
+    const p=source.get(r.slug);
+    requireThat(p&&!seen.has(r.slug)&&r.name.trim(), 'Invalid or repeated board identity: '+r.slug);
+    seen.add(r.slug);
+    requireThat(!hasToken(p)&&r.token_status==='pre-token'&&r.age_days===ageDays(s.as_of,p.listed_at), 'Bad status or age: '+r.slug);
+    requireThat(r.rank===i+1&&(!i||rows[i-1].implied_value_usd>=r.implied_value_usd),'Unexpected rank order');
+    const v=r.implied_value_usd, f=r.farm;
+    requireThat(Number.isInteger(v)&&v>0&&v<=1e14&&r.tvl_usd>=0&&r.value_if_launches_usd>0,'Invalid value: '+r.slug);
+    requireThat([r.odds,r.odds_survivor,r.bucket_odds].every(x=>x>=.05&&x<=.95),'Invalid odds: '+r.slug);
+    requireThat(r.band_p10_usd<=r.band_p25_usd&&r.band_p25_usd<=v&&v<=r.band_p75_usd&&r.band_p75_usd<=r.band_p90_usd,'Invalid value bands');
+    requireThat(r.rank_range_lo>=1&&r.rank_range_hi<=rows.length&&r.rank_range_lo<=r.rank_range_hi,'Invalid rank range');
+    requireThat(Number.isFinite(f.netUsd)&&Number.isFinite(f.breakEvenOdds)&&f.verdict===(f.netUsd>0?'FARM':f.breakEvenOdds<=.33?'THIN':'SKIP'),'Invalid farm decision');
+    requireThat(r.odds===r.bucket_odds&&r.odds===f.odds&&f.reserveUsd===10&&
+      Math.abs(f.feesUsd-f.nTx*f.gasUsd-f.allowanceUsd)<1e-10&&
+      Math.abs(f.sliceIfLaunchesUsd*r.odds-f.feesUsd-f.forgoneUsd-f.netUsd)<1e-10,'Headline odds or fee arithmetic differs: '+r.slug);
+    requireThat(r.nearest_comps.length&&r.farm_steps.length===8&&r.farm_steps.every(x=>x.trim().length>=20&&x.trim().length<=600),'Invalid plan or anchors: '+r.slug);
+    requireThat(r.farm_steps[0].includes('wallet buffer')&&r.farm_steps[0].includes('not deducted')&&
+      r.farm_steps[7].includes('IF a real announcement exists AND eligibility is confirmed'),'Reserve or conditional-claim disclosure missing');
+  });
+  requireThat(s.watchlist.every(slug=>seen.has(slug)), 'Missing watchlist protocol');
+}
+export function verifyWritten(out:string,rows:BoardRow[],dossier:boolean) {
+  const doc=JSON.parse(readFileSync(join(out,'board.json'),'utf8'));
+  requireThat(JSON.stringify(doc.rows)===JSON.stringify(rows),'Written board differs');
+  const data=readFileSync(join(out,'data.js'),'utf8'), prefix='window.RADAR=';
+  requireThat(data.startsWith(prefix)&&data.length>=100,'Dashboard payload missing');
+  const radar:RadarData=JSON.parse(data.slice(prefix.length).trim().slice(0,-1));
+  requireThat(radar.model_version==='radar-6'&&radar.validation&&radar.reconciliation.status==='PASS','Invalid dashboard metadata');
+  if(dossier) {
+    const path=join(out,'dossier.json');
+    requireThat(statSync(path).size<=1572864,'Dossier image envelope exceeds byte cap');
+    const {text}=JSON.parse(readFileSync(path,'utf8'));
+    requireThat(Buffer.byteLength(text)<=65536,'Dossier text exceeds cap');
   }
 }
