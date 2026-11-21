@@ -1,176 +1,145 @@
-const DATA=window.RADAR;
-const app=document.querySelector('#app');
-const esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
-function integrity(){
-  const c=DATA.reconciliation;
-  const n=list=>DATA.rows.filter(r=>r.list===list).length;
-  return `<p class="integrity">${c.ledger_total} accounted for | Ranked: ${c.ranked} (${n('watchlist')} watchlist · ${n('found')} found · ${n('early')} early) | Ledger: ${c.ledger_total} protocols in ${c.ledger_groups} groups | Reconciliation: <strong class="${c.status.toLowerCase()}">${c.status}${c.status==='FAIL'?' · discrepancy '+c.discrepancy:''}</strong> | Snapshot: ${esc(DATA.snapshot_id)}</p>`;
+const d = window.RADAR;
+const byId = id => document.getElementById(id);
+const esc = value => String(value ?? '—').replace(/[&<>"']/g, ch =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[ch]);
+const usd = (n,digits=2) => new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',
+  minimumFractionDigits:digits,maximumFractionDigits:digits}).format(n);
+const compact = n => n == null ? '—' : usd(n>=1e9 ? n/1e9 : n/1e6,2) + (n>=1e9?'B':'M');
+const pct = n => Number.isFinite(n) ? (100*n).toFixed(1)+'%' : '—';
+const multiple = n => n == null ? '—' : '×'+n.toFixed(2);
+const verdict = text => '<span class="tag '+text.toLowerCase()+'">'+text+'</span>';
+const views = {farm:'Farm decisions',valuation:'Valuation ranking',anchors:'Traded-token anchors',method:'Method',coverage:'Coverage'};
+const query = new URLSearchParams(location.search);
+let view = Object.hasOwn(views,query.get('view')) ? query.get('view') : 'farm';
+let ticket = 1000, filter = query.get('filter') ?? '', selected = query.get('pick') ?? '';
+let limit = 12;
+let group = '';
+
+function cells(values, numeric=[]) {
+  return values.map((c,i)=>'<td'+(numeric.includes(i)?' class="num"':'')+'>'+c+'</td>').join('');
 }
-const tickets=[500,1000,5000,10000], shares=[.035,.07,.1,.14];
-const money=x=>'$'+Math.round(x).toLocaleString('en-US');
-const cash=x=> (x<0?'−':'')+'$'+Math.abs(x).toFixed(2);
-const signed=x=>(x>0?'+':'')+cash(x);
-const pct=x=> Number.isFinite(x)?(100*x).toFixed(1)+'%':'—';
-const scenario={base:'Conservative age-bucket proxy',assumed:'Assumed eventual-launch scenario'};
-const badge=v=>`<span class="badge ${v.toLowerCase()}">${v}</span>`;
-const net=x=>`<strong class="${x>0?'positive':'negative'}">${signed(x)}</strong>`;
-const categories=[...new Set((DATA?.rows??[]).map(r=>r.category??'Unknown'))].sort();
-function state(){
-  const h=new URLSearchParams(location.hash.slice(1));
-  const read=(key,choices,fallback)=>choices.includes(h.get(key))?h.get(key):fallback;
-  return {view:read('view',['farm','value'],'farm'),sc:read('sc',['base','assumed'],'base'),
-    tab:read('tab',['board','method','ledger','anchors'],'board'),ticket:tickets.includes(+h.get('ticket'))?+h.get('ticket'):1000,
-    share:shares.includes(+h.get('share'))?+h.get('share'):.1,detail:h.get('detail')??'',q:h.get('q')??'',
-    cat:read('cat',categories,''),list:read('list',['watchlist','found','early'],''),
-    verdict:read('verdict',['FARM','THIN','SKIP'],''),page:Math.max(1,Math.floor(+h.get('page'))||1)};
+function table(headers,rows,id='') {
+  return '<table '+(id?'id="'+id+'"':'')+'><thead><tr>'+headers.map(h=>'<th scope="col">'+h+'</th>').join('')+'</tr></thead><tbody>'+rows.join('')+'</tbody></table>';
 }
-let S=state();
-function change(delta){
-  S={...S,...delta};
-  const h=new URLSearchParams(Object.entries(S).filter(([,v])=>v!==''));
-  history.replaceState(null,'','#'+h);
-  render();
+const line = (values,numeric) => '<tr>'+cells(values,numeric)+'</tr>';
+const includes = (p,q) => [p.name,p.slug,p.category,...(p.chains??[])].some(v=>String(v).toLowerCase().includes(q));
+const plan = p => d.plans[p.slug] ?? {asset:'Unverified',action:'Identify the official product and its supported deposit asset. Leave the ticket undeployed while access and terms are unverified.',
+  exit:'Verify redemption and withdrawal limits before funding.'};
+
+function detail(p) {
+  if (!p) return '<aside class="panel pad"><p>Select a protocol to inspect its assumptions.</p></aside>';
+  const f = p.farms[ticket], instructions = plan(p);
+  const halfNet = f.expectedSlice/2-f.fees-f.forgone;
+  const bands = d.validation.curve.bands, range = d.validation.stability.ranges[p.slug];
+  const items = [['Ticket',usd(ticket,0)],['Charged fees',usd(f.fees)],['Wallet buffer',usd(f.buffer)],
+    ['If launch occurs',usd(f.slice)],['Forgone yield',usd(f.forgone)],['Break-even odds',pct(f.breakEven)],
+    ['Bucket proxy net',usd(f.net)],['Lower share net · 5%',usd(halfNet)],['Net / active hour',usd(f.netPerHour)]];
+  return '<aside class="panel detail"><div class="pad plan-head"><div class="panel-head"><div class="kicker">Selected decision · value rank #'+p.rank+'</div>'+verdict(f.verdict)+'</div>'+
+    '<h2>'+esc(p.name)+'</h2><p>'+esc(f.chain)+' · '+esc(instructions.asset)+' · '+f.hold+' days held · '+f.hours.toFixed(2)+' h active · 10% base share</p>'+
+    '<div class="costs">'+items.map(([label,n])=>'<div><span>'+label+'</span><b>'+n+'</b></div>').join('')+'</div></div>'+
+    '<div class="pad"><h3>Execution checks</h3><ol class="steps"><li>'+esc(instructions.action)+'</li>'+
+    '<li>Budget '+usd(f.fees)+' in modeled charges and keep '+usd(f.buffer)+' in the wallet as reserve. Confirm eligibility, supported network and live quotes before funding.</li>'+
+    '<li>Check weekly. Claim only after an official announcement and confirmed eligibility. '+esc(instructions.exit)+'</li></ol>'+
+    '<p><a href="https://defillama.com/protocol/'+encodeURIComponent(p.slug)+'">DefiLlama snapshot evidence</a> · '+esc(d.snapshot.asOf)+' · Eligibility unverified</p>'+
+    '<hr><p>TVL '+compact(p.tvl_usd)+' · Launch value '+compact(p.value)+' · Proxy '+pct(p.odds)+' ('+pct(p.bucketRate)+' age bucket, '+pct(p.categoryRate)+' shrunk category)</p>'+
+    '<p>Implied '+compact(p.implied)+(bands.middle80?' · 80% valuation error band '+compact(p.implied/bands.middle80)+'–'+compact(p.implied*bands.middle80):'')+(range?' · Refit ranks '+range.p10+'–'+range.p90:'')+'</p></div></aside>';
 }
-function econ(r,sc=S.sc,ticket=S.ticket,share=S.share){
-  const f=r.farm, odds=sc==='assumed'?r.odds_survivor:r.odds;
-  const launch=DATA.curve.a*r.tvl_usd**DATA.curve.b;
-  const slice=share*launch*ticket/r.tvl_usd*f.timeShare;
-  const forgone=ticket*.04*f.holdDays/365, fees=f.feesUsd;
-  const expected=slice*odds, result=expected-fees-forgone, be=(fees+forgone)/slice;
-  return {odds,launch,value:Math.max(1,Math.round(launch*odds)),slice,expected,forgone,fees,net:result,be,
-    ticket,reserve:f.reserveUsd,verdict:result>0?'FARM':be<=.33?'THIN':'SKIP'};
-}
-function order(a,b,view){
-  if(view==='value') return b.e.value-a.e.value || a.r.rank-b.r.rank;
-  return Number(b.e.verdict==='FARM')-Number(a.e.verdict==='FARM') || b.e.net-a.e.net || a.r.rank-b.r.rank;
-}
-function button(key,v,label,active=S[key]===v){
-  return `<button type="button" data-key="${key}" data-value="${esc(v)}" aria-pressed="${active}">${esc(label)}</button>`;
-}
-function options(key, label, entries){
-  return `<label>${label}<select data-key="${key}">${entries.map(([v,t])=>`<option value="${esc(v)}"${String(S[key])===String(v)?' selected':''}>${esc(t)}</option>`).join('')}</select></label>`;
-}
-function table(headers,rows,id=''){
-  return `<table${id?' id="'+id+'"':''}><thead><tr>${headers.map(h=>'<th scope="col">'+h+'</th>').join('')}</tr></thead><tbody>${rows.map(cells=>'<tr>'+cells.map(c=>'<td>'+c+'</td>').join('')+'</tr>').join('')}</tbody></table>`;
-}
-const compact=n=>'$'+(n/1e6).toFixed(1)+'M';
-function rowCells({r,e}){
-  const f=r.farm;
-  return [`<span title="Base valuation rank">${r.rank}</span>`,button('detail',r.slug,r.name),esc(r.chains[0]??'Unknown'),
-    r.list,money(e.ticket),cash(e.fees),cash(e.reserve),net(e.net),pct(e.be),badge(e.verdict),'Unknown',
-    Math.round(f.hours*60)+'m',f.holdDays+'d',compact(r.tvl_usd),r.change_7d===null?'—':pct(r.change_7d/100),
-    r.age_days===null?'—':r.age_days+'d',pct(e.odds),compact(e.value)];
-}
-function detail(r){
-  const e=econ(r), f=r.farm;
-  return `<aside id="detail" class="plan"><div class="plan-title"><h2>${esc(r.name)}</h2>${button('detail','','Close',false)}</div>
-    <p>${esc(r.chains.join(' · ')||'Chain unknown')} · ${esc(r.category??'Category unknown')} · ${r.list} · ${badge(e.verdict)}</p>
-    <p>Eligibility unknown · ${e.ticket.toLocaleString('en-US',{style:'currency',currency:'USD',maximumFractionDigits:0})} principal · ${Math.round(f.hours*60)} min active · ${f.holdDays} days modeled hold</p>
-    <div class="netbox"><span>Conservative age-bucket proxy · net</span>${net(econ(r,'base').net)}
-    <span>Assumed eventual-launch scenario · net</span>${net(econ(r,'assumed').net)}
-    <span>Expected slice</span><b>${cash(e.expected)}</b><span>Charged fees</span><b>${cash(e.fees)}</b>
-    <span>Forgone yield</span><b>${cash(e.forgone)}</b><span>Wallet reserve (not deducted)</span><b>${cash(e.reserve)}</b>
-    <span>Break-even odds</span><b>${pct(e.be)}</b></div>
-    <p class="funding">Funding: ${money(e.ticket)} principal + ${cash(e.fees)} charged fees + ${cash(e.reserve)} wallet buffer. The buffer is not deducted from net.</p>
-    <ol>${r.farm_steps.map((step,i)=>'<li>'+esc(i===0?step.replace(money(f.ticket)+'.00',money(e.ticket)+'.00'):step)+'</li>').join('')}</ol>
-    <h3>Valuation evidence</h3><p>${money(e.launch)} if a token launches × ${pct(e.odds)} = ${money(e.value)} implied. Base rank ${r.rank}, bootstrap range ${r.rank_range_lo}–${r.rank_range_hi}.</p>
-    <p>Headline curve error bands: ${compact(r.band_p25_usd)}–${compact(r.band_p75_usd)} (central 50%); ${compact(r.band_p10_usd)}–${compact(r.band_p90_usd)} (central 80%). Closest traded anchors by log TVL: ${r.nearest_comps.map(c=>esc(c.name)+' ('+compact(c.mcap_usd)+' cap)').join(' · ')}.</p>
-  </aside>`;
-}
-function board(){
-  const all=DATA.rows.map(r=>({r,e:econ(r)}));
-  const counts=Object.fromEntries(['FARM','THIN','SKIP'].map(v=>[v,all.filter(x=>x.e.verdict===v).length]));
-  const totals=all.reduce((n,x)=>n+x.e.value,0);
-  const audit=all.filter(({r})=>econ(r,'base').value!==r.implied_value_usd).length;
-  const q=S.q.trim().toLowerCase();
-  let rows=all.filter(({r,e})=>(!q||[r.name,r.slug,...r.chains].join(' ').toLowerCase().includes(q)) &&
-    (!S.cat||S.cat===(r.category??'Unknown'))&&(!S.list||S.list===r.list)&&(!S.verdict||S.verdict===e.verdict));
-  if(!counts.FARM&&S.view==='farm'&&S.verdict==='FARM') rows=all.filter(({r})=>(!q||[r.name,r.slug,...r.chains].join(' ').toLowerCase().includes(q))&&(!S.cat||S.cat===(r.category??'Unknown'))&&(!S.list||S.list===r.list));
-  rows.sort((a,b)=>order(a,b,S.view));
-  const selected=DATA.rows.find(r=>r.slug===S.detail), size=20, pages=Math.max(1,Math.ceil(rows.length/size)), page=Math.min(S.page,pages);
-  return `<div class="stats"><div><small>Expected net · ${money(S.ticket)} · ${pct(S.share)} share</small><b>${counts.FARM} FARM <span> / ${counts.THIN} THIN / ${counts.SKIP} SKIP</span></b></div>
-    <div><small>Total implied protocol value</small><b>${money(totals)}</b></div><div><small>Active odds basis</small><b>${esc(scenario[S.sc])}</b></div></div>
-    <p class="methodline">Huber TVL curve · 7-day TVL growth shown for context · Listing age enters odds and farming assumptions · Headline audit: ${DATA.rows.length-audit}/${DATA.rows.length} rows match</p>
-    <div class="controls">${options('ticket','Ticket',tickets.map(t=>[t,money(t)]))}
-    ${options('share','Airdrop share',shares.map(s=>[s,pct(s)]))}${options('sc','Odds basis',Object.entries(scenario))}
-    <label>Search<input data-key="q" type="search" value="${esc(S.q)}" placeholder="Protocol or chain"></label>
-    ${options('cat','Category',[['','All'],...categories.map(x=>[x,x])])}
-    ${options('list','Source',[['','All'],...['watchlist','found','early'].map(x=>[x,x])])}
-    ${options('verdict','Verdict',[['','All'],...Object.keys(counts).map(x=>[x,x])])}</div>
-    ${S.view==='farm'&&!counts.FARM?'<p class="notice">No FARM plans under current assumptions. Strongest remaining decisions follow.</p>':''}
-    <div class="board-layout${selected?' split':''}"><section class="board-panel">
-      <div class="panel-head"><h2>${S.view==='farm'?'Farm decisions':'Valuation'}</h2><small>${rows.length} of ${DATA.rows.length} protocols</small></div>
-      <div class="table-scroll">${table(['Base<br>rank','Protocol','Chain','Source','Ticket','Charged<br>fees','Wallet<br>reserve','Expected<br>net','Break-even<br>odds','Verdict','Eligibility','Active','Hold','TVL','7-day','Age','Odds','Implied<br>value'],rows.slice((page-1)*size,page*size).map(rowCells),'board')}</div>
-      ${rows.length?'':'<p class="notice">No protocols match these filters.</p>'}<div class="pagination">${button('page',Math.max(1,page-1),'Previous',false)} <small>Page ${page} of ${pages}</small> ${button('page',Math.min(page+1,pages),'Next',false)}</div>
-    </section>${selected?detail(selected):''}</div>`;
-}
-function render(){
-  const active=k=>S.tab==='board'&&S.view===k;
-  app.innerHTML=`<header><div><p class="eyebrow">DEFI INTELLIGENCE / ${esc(DATA.model_version)}</p><h1>Token Radar</h1></div>
-  <p class="provenance">${esc(DATA.source)} / ${esc(DATA.as_of)}<br><small>${DATA.universe_size} protocols · Watchlist floor ${compact(DATA.floor_usd)}</small></p></header>${integrity()}
-  <nav aria-label="Dashboard views">${button('view','farm','Farm decisions',active('farm'))}${button('view','value','Valuation',active('value'))}
-  ${button('tab','anchors','Traded anchors')}${button('tab','method','Method')}${button('tab','ledger','Ledger')}</nav>${S.tab==='board'?board():evidence()}`;
-}
-function evidence(){
-  if(S.tab==='ledger'){
-    const q=S.q.trim().toLowerCase();
-    return `<h2>Coverage ledger · ${DATA.reconciliation.ledger_total} protocols</h2><label>Search dispositions <input type="search" data-key="q" value="${esc(S.q)}"></label>
-    <p class="methodline">Each snapshot slug appears once. ${DATA.reconciliation.exclusions_total} protocols are outside the ranking.</p>
-    ${DATA.ledger.map(g=>{
-      const members=g.members.filter(m=>[m.slug,m.name].join(' ').toLowerCase().includes(q));
-      return members.length?`<details${q?' open':''}><summary>${esc(g.label)} · ${members.length}${q?' matches':''}</summary><p>${members.map(m=>esc(m.name)+' <small>('+esc(m.slug)+')</small>').join(' · ')}</p></details>`:'';
-    }).join('')}`;
+
+function listing() {
+  const farm = view === 'farm', q = filter.trim().toLowerCase();
+  const rows = d.rows.filter(p => includes(p,q));
+  if (farm) {
+    rows.sort((a,b)=>{
+      const x=a.farms[ticket],y=b.farms[ticket];
+      return Number(x.verdict!=='FARM')-Number(y.verdict!=='FARM') || y.net-x.net || a.rank-b.rank;
+    });
   }
-  if(S.tab==='anchors') return '<h2>Traded token anchors</h2><p>Positive market cap on record. The curve uses standalone tokens with cap at least $1M and positive TVL.</p>'+
-    table(['Protocol','Category','TVL','Market cap','Fit comp'],DATA.anchors.map(r=>[esc(r.name),esc(r.category),money(r.tvl_usd),money(r.mcap_usd),r.fit_comp?'Yes':'—']));
-  return method();
+  const pick = rows.find(p=>p.slug===selected) ?? rows[0];
+  const noFarm = farm && !d.rows.some(p=>p.farms[ticket].verdict==='FARM');
+  const dataRows = rows.slice(0,limit).map(p=>{
+    const f=p.farms[ticket];
+    const name = '<button type="button" data-pick="'+esc(p.slug)+'">'+esc(p.name)+'</button><small>#'+p.rank+' · '+esc(f.chain)+' · '+esc(p.cohort)+'</small>';
+    const columns = farm ? [name,pct(p.odds),pct(f.breakEven),usd(f.fees),usd(f.net),verdict(f.verdict)]
+      : [name,compact(p.tvl_usd),p.change_7d==null?'—':p.change_7d.toFixed(1)+'%',p.age==null?'—':p.age+' d',compact(p.implied),verdict(f.verdict)];
+    return '<tr data-slug="'+esc(p.slug)+'" class="'+(p===pick?'selected':'')+'">'+cells(columns,[1,2,3,4])+'</tr>';
+  });
+  return '<div class="workspace"><section class="panel"><div class="pad"><div class="panel-head"><div><h2>'+views[view]+'</h2><p>'+
+    (farm?'Expected net within priority groups':'Implied value descending · bucket proxy')+'</p></div><div class="controls"><input id="search" aria-label="Filter by protocol, chain or category" placeholder="Filter protocols" value="'+esc(filter)+'"></div></div>'+
+    (noFarm?'<div class="empty"><strong>No FARM plans under current assumptions</strong><p>Strongest remaining decisions shown below. FARM requires break-even odds ≤ 10%.</p></div>':'')+'</div>'+
+    table(farm?['Protocol','Proxy','Break-even','Fees','Exp. net','Verdict']:['Protocol','TVL','7d','Age','Implied','Verdict'],dataRows,'board')+
+    '<div class="pad panel-head"><p>'+Math.min(rows.length,limit)+' of '+rows.length+' matching protocols</p>'+(limit<rows.length?'<button id="more">Show more</button>':'')+'</div></section>'+detail(pick)+'</div>';
 }
-const fixed=(n,d=2)=>Number.isFinite(n)?n.toFixed(d):'—';
-const mult=n=>Number.isFinite(n)?'×'+fixed(n):'—';
-const walkKey=w=>typeof w==='number'?Math.round(w*100)+'/'+Math.round((1-w)*100):w;
-function method(){
-  const v=DATA.validation, c=DATA.curve, f=DATA.fit;
-  const box=(title,heads,rows)=>`<section class="method-card"><h3>${title}</h3><div class="table-scroll">${table(heads,rows)}</div></section>`;
-  const windowCols=v.walk.map(x=>walkKey(x.window));
-  const missCols=['Model','LOO median','Within 3×',...windowCols];
-  return `<article class="method"><h2>Method &amp; tests</h2>
-  <p><strong>Headline implied value (USD)</strong> = max(1, round(launch market cap × conservative age-bucket proxy)). Launch market cap in USD = ${fixed(c.a)} × (TVL in USD)<sup>${fixed(c.b,4)}</sup>. The Huber regression fits log market cap on log TVL for ${v.comps} standalone comps with positive TVL, cap ≥ $1M, and no shared symbol or CoinGecko ID. Log R²: ${fixed(c.r2,3)} (OLS ${fixed(c.ols,3)}). This prices circulating market cap, not fully diluted value or individual proceeds.</p>
-  <p>Base odds = clamp(age-bucket token prevalence × (shrunk category prevalence / overall prevalence)<sup>0.25</sup>, 0.05, 0.95). A token is on record if market cap, symbol, or CoinGecko ID is present. Buckets in days: &lt;180, 180–364, 365–729, 730–1459, ≥1460: ${DATA.buckets.map(x=>pct(x)).join(' / ')}. No age uses overall prevalence (${pct(DATA.overall)}). Category shrinkage adds five observations at the overall rate; unknown category uses overall prevalence. Age means days since the snapshot listing date, a proxy for time without a recorded token. The recorded 7-day TVL change is displayed and tested in ablation; it does not enter the value formula.</p>
-  <p><strong>Assumed eventual-launch scenario:</strong> replace the bucket rate with (L − F(t)) / (1 − F(t)), where F(t) = L × [1 − exp(−(t/τ)<sup>k</sup>)] and t is listing age in days; keep the same category factor and clamp. At fixed L = ${fixed(f.L)}, τ = ${fixed(f.tau,1)} days and k = ${fixed(f.k,3)} minimize weighted squared deviations from the five token-presence points at median bucket age. No age retains the bucket fallback. Neither eventual launch share nor eligibility is identified by one snapshot.</p>
-  ${box('Assumed eventual-launch scenario · sensitivity',['Assumed L','τ days','k','Weighted SSE','56d','407d','1845d','Implied total','FARM @ $1k / 10%'],v.survivorProbes.map(p=>[pct(p.L),fixed(p.tau,1),fixed(p.k,3),fixed(p.sse),...p.ages.map(pct),money(p.total),p.farm]))}
-  <p>Sensitivity ages show the survivor rate before category adjustment. Split-half Brier (token-presence test): Weibull CDF ${fixed(v.split.weibull.brier,4)}, bucket ${fixed(v.split.bucket.brier,4)}. Sort dated slugs, train on odd positions and test on even positions, then reverse. Brier is mean squared error against the binary token-on-record flag; lower is better. These are cross-sectional tests and provide no future-launch validation.</p>
-  <p><strong>Farm math (USD):</strong> conditional slice = airdrop share × launch market cap × (ticket / TVL) × hold / (age/2 + hold). Hold is 60 days below age 180, otherwise 90; missing age uses 365 for time share. Expected net = conditional slice × active odds − charged fees − forgone yield. Fees = (5 + floor(hold / 7)) × first-chain gas + $1.50 allowance. Forgone yield = ticket × 4% × hold / 365. The $10 wallet buffer is separate and never deducted. Active minutes = 50 + 10 × floor(hold / 7). Fees and activity are estimates. FARM if net &gt; 0, otherwise THIN if break-even odds (charged fees plus forgone yield / conditional slice, with the costs summed first) ≤ 33%, otherwise SKIP. A high protocol value can still leave an individual ticket with a tiny slice.</p>
-  <p><strong>Holdouts:</strong> leave-one-out (LOO) fits all comps except the one priced. Miss = max(prediction / observed cap, observed cap / prediction); median over held-out comps. Walk-forward trains on older dated comps by listing date, then prices the newer set at snapshot marks. It is a listing-cohort test, without historical marks. Band factors ${v.bands.map(mult).join(' / ')} use the 50th and 80th percentiles of LOO misses; hold rates (${v.bandHold.map(pct).join(' / ')}) are the observed shares inside those symmetric multiplicative bands. The factors show curve error; odds uncertainty is separate.</p>
-  <p><strong>Bootstrap:</strong> 200 resamples of the comps with replacement refit the curve at fixed headline odds. Each rank range is the 10th–90th percentile. ${v.top20}/20 leaders stay top 20 in at least 80% of refits; median top-20 range width ${v.medianWidth} ranks. First-place counts: ${v.rank1.map(([slug,n])=>esc(DATA.rows.find(r=>r.slug===slug)?.name??slug)+' '+n+'/200').join(' · ')}.</p>
-  ${box('Curve ablation · held-out multiplicative misses',missCols,v.ablation.map(x=>[esc(x.label)+' · '+x.decision,mult(x.loo.miss),pct(x.loo.within3),...x.walk.map(w=>mult(w.miss))]))}
-  ${box('Comparable-set probes · same test cohorts',['Fit filter','Comps',...missCols.slice(1)],v.compProbes.map(x=>[esc(x.label),x.train,mult(x.loo.miss),pct(x.loo.within3),...x.walk.map(w=>mult(w.miss))]))}
-  ${box('Token-presence LOO · odds exponent',['Exponent','Accuracy at 50%','Brier','Board total','Sentora rank'],v.bakeoff.map(x=>[x.exponent,pct(x.accuracy),fixed(x.brier,4),money(x.total),x.sentora]))}
-  <p>Each dated held-out protocol is scored after rebuilding rates from the remaining snapshot. Survivor scenario odds applied to the same token-presence target: ${pct(v.survivorLoo.accuracy)} accuracy and ${fixed(v.survivorLoo.brier,4)} Brier. Scenario odds answer a different conditional question; this comparison cannot calibrate them.</p>
-  ${box('Small-category rules · odds at exponent 0.25',['Rule','LOO accuracy','LOO Brier','Polymarket odds','Total implied'],v.smallN.map(x=>[x.rule===-1?'Fallback to overall if n &lt; 5':x.rule===0?'Raw':x.rule===5?'Shrink K=5 (base)':'Shrink K='+x.rule,pct(x.accuracy),fixed(x.brier,4),pct(x.polymarket?.odds),money(x.total)]))}
-  ${box('Farm sensitivity · headline odds, one input changed',['Assumption','FARM @ $1k','FARM @ $10k'],v.farmSensitivity.map(x=>[esc(x.label),...x.counts]))}
-  ${box('Base FARM counts · ticket and share combinations',['Ticket',...shares.map(pct)],tickets.map(t=>[money(t),...shares.map(s=>DATA.rows.filter(r=>econ(r,'base',t,s).verdict==='FARM').length)]))}
-  </article>`;
+
+function method() {
+  const v=d.validation,c=v.curve,b=v.baseline,p=d.params;
+  const ablation = [['Flat median cap / TVL',multiple(b.loo.median),multiple(b.wf50.median),'Baseline'],
+    ['Huber TVL curve',multiple(c.loo.median),multiple(c.wf50.median),'Used'],...d.ablation];
+  return '<div class="notes"><article class="panel"><h2>Value curve and validation</h2><p>Value if launch occurs (USD) = '+d.curve.A+' × TVL (USD)^'+d.curve.b+'. Implied value = launch value × bucket odds. Huber IRLS on log USD, k=1.345 with median absolute deviation centered on median residual. Growth, age and category premiums are omitted from the value fit.</p>'+
+    '<p>Training pool: '+d.curve.n+' traded, standalone tokens with market cap ≥ $1M and TVL > $0. Shared symbols or CoinGecko IDs are excluded. LOO refits on all except one and predicts that held-out cap. Walk-forward sorts dated comps by listing date and fits on the older '+c.wf50.train+' to price the newer '+c.wf50.test+'. Date orders a cross section of current observations.</p>'+
+    '<p>Median miss = median max(predicted / observed, observed / predicted). LOO miss '+multiple(c.loo.median)+' and walk-forward 50/50 '+multiple(c.wf50.median)+'. LOO ≤3×: '+pct(c.loo.within3)+'. Symmetric 50% / 80% error multipliers: '+multiple(c.bands.middle50)+' / '+multiple(c.bands.middle80)+'. '+v.stability.stable20+' of the first 20 stay in the top 20 in ≥80% of '+v.stability.refits+' bootstrap refits, with odds fixed.</p>'+
+    '<h3>Ablation</h3><p>Flat and Huber rows recomputed. Other variants are sealed Round 4 study results.</p>'+table(['Variant','LOO median','WF 50/50','Use'],ablation.map(r=>line(r)))+'</article>'+
+    '<article class="panel"><h2>Token presence proxy</h2><p>Odds = clamp(bucketRate(age) × (shrunkCategoryRate / overall)^0.25, 0.05, 0.95). Shrunk rate = (category token count + 5 × overall) / (category count + 5). Token record = cap field present, symbol, or CoinGecko ID. Missing listing dates use overall ('+pct(p.overall)+'). The cross section measures recorded tokens and cannot validate a future launch.</p>'+
+    table(['Age bucket','Rows','Median age','Recorded token rate'],p.buckets.map((b,i)=>line([['<6 months','6–12 months','1–2 years','2–4 years','>4 years'][i].replace('<','&lt;'),b.n,b.age==null?'—':b.age+' days',pct(b.rate)])))+
+    '<p>Split-half bucket proxy Brier: '+(v.splitHalf.brier?.toFixed(4)??'—')+' (mean squared error for recorded token, '+v.splitHalf.train+' train / '+v.splitHalf.test+' test dated rows).</p></article>'+
+    '<article class="panel"><h2>Survivor probe · unidentified assumption</h2><p>Fit F(t) = L[1 − exp(−(t/τ)^k)] to bucket rates at median ages, weighted by bucket counts. The hypothetical remaining share is (L − F)/(1 − F), adjusted by the same category factor and clamp. One snapshot cannot identify L. These are investigation results only.</p>'+
+    table(['Fixed L','τ (days)','Shape k','Weighted SSE','Hypothetical total','Hypothetical first','Polymarket rank','Net > $0'],v.survivor.map(s=>line([pct(s.L),s.tau.toFixed(0),s.k.toFixed(3),s.sse.toFixed(3),compact(s.total),esc(s.top),s.polymarketRank||'—',s.positiveNet])))+'</article>'+
+    '<article class="panel"><h2>Farm cost conventions</h2><p>Hold 60 days at age &lt;180 days, otherwise 90 days. Unknown age = 365 days for economics. Weeks = floor(hold / 7). Time share = hold / (age/2 + hold). Slice if launch = share × launch value × ticket / TVL × time share. Base allocation share 10%, lower scenario 5%.</p>'+
+    '<p>Charged fees = (5 + weeks) × estimated first-chain gas USD + $1.50 allowance. Five transactions budget fund, approval, deposit, conditional claim and exit. $10 wallet buffer stays outside net. Forgone yield = 4% annual × ticket × hold / 365. Net = bucket odds × slice − fees − forgone yield. Active hours = (50 + 10 × weeks) / 60. Net/hour = net / active hours.</p>'+
+    '<p>Break-even odds = (charged fees + forgone yield) / slice. FARM ≤10%, THIN above 10% through 33%, SKIP above 33%. Implied valuation and expected farming net are distinct.</p>'+
+    table(['Ticket','FARM','THIN','SKIP'],v.tickets.map(t=>line([usd(t.ticket,0),t.FARM,t.THIN,t.SKIP])))+'</article></div>';
 }
-app.addEventListener('click',event=>{
-  const b=event.target.closest('button[data-key]');
-  if(!b) return;
-  const {key,value}=b.dataset;
-  if(key==='view') change({view:value,tab:'board',page:1});
-  else if(key==='detail') change({detail:S.detail===value?'':value});
-  else if(key==='page') change({page:+value});
-  else change({[key]:value,page:1});
-});
-app.addEventListener('change',event=>{
-  const {key}=event.target.dataset;
-  if(event.target.tagName==='SELECT') change({[key]:['ticket','share'].includes(key)?+event.target.value:event.target.value,page:1});
-});
-app.addEventListener('input',event=>{
-  if(event.target.dataset.key!=='q') return;
-  const end=event.target.selectionEnd;
-  change({q:event.target.value,page:1});
-  const input=app.querySelector('input[data-key=q]');
-  input.focus();
-  if(end!==null) input.setSelectionRange(end,end);
-});
-window.addEventListener('hashchange',()=>{S=state();render();});
-if(DATA) render(); else app.textContent='Dashboard data is missing. Build the snapshot output first.';
+
+function anchors() {
+  const matches = d.anchors.filter(p=>includes(p,filter.trim().toLowerCase()));
+  return '<section class="panel"><div class="pad panel-head"><div><h2>Traded-token anchors</h2><p>Observed USD market caps · training inclusion marked</p></div><input id="search" aria-label="Filter anchors" value="'+esc(filter)+'" placeholder="Filter anchors"></div>'+
+    table(['Protocol','Token','TVL','Observed cap','Curve cap','Fit sample'],matches.slice(0,limit).map(p=>line([esc(p.name),esc(p.symbol),compact(p.tvl_usd),compact(p.mcap_usd),compact(p.curveCap),p.training?'Included':'Excluded'],[2,3,4])))+
+    '<div class="pad panel-head"><p>'+Math.min(limit,matches.length)+' of '+matches.length+' anchors</p>'+(matches.length>limit?'<button id="more">Show more</button>':'')+'</div></section>';
+}
+
+function coverage() {
+  const matching = d.ledger.filter(g=>!group||g.name===group).flatMap(g=>g.members.map(p=>({...p,group:g.name})))
+    .filter(p=>includes(p,filter.trim().toLowerCase()));
+  return '<div class="notes"><article class="panel"><h2>Coverage ledger</h2><p>Every deduplicated slug has a single disposition. Traded tokens have positive cap; token on record covers other token signal. Pre-token watchlist takes priority over name/category filters. Remaining positive TVL ranks above or below the '+compact(d.snapshot.floor)+' floor.</p>'+
+    '<p>'+d.ledger.map(g=>esc(g.name)+' <strong>'+g.count+'</strong>').join(' · ')+'</p>'+
+    '<div class="controls"><select id="group" aria-label="Ledger group"><option value="">All groups</option>'+d.ledger.map(g=>'<option '+(group===g.name?'selected':'')+'>'+esc(g.name)+'</option>').join('')+'</select><input id="search" aria-label="Filter ledger" placeholder="Filter ledger" value="'+esc(filter)+'"></div>'+
+    table(['Protocol','Category','Disposition'],matching.slice(0,limit).map(p=>line([esc(p.name),esc(p.category),esc(p.group)])))+
+    '<div class="panel-head"><p>'+Math.min(limit,matching.length)+' of '+matching.length+' matching records</p>'+(matching.length>limit?'<button id="more">Show more</button>':'')+'</div></article></div>';
+}
+
+function render() {
+  const i=d.integrity, counts={FARM:0,THIN:0,SKIP:0};
+  d.rows.forEach(p=>counts[p.farms[ticket].verdict]++);
+  byId('edition').textContent=d.modelVersion.toUpperCase();
+  byId('headline').textContent=i.status==='PASS'?i.coverage+' accounted for':'Coverage mismatch';
+  byId('source').textContent=d.snapshot.asOf+' · DefiLlama snapshot · Conservative bucket proxy';
+  byId('integrity').innerHTML=['Coverage: '+i.coverage+' protocols accounted for',
+    'Ranked: '+i.ranked+' ('+i.cohorts.watchlist+' watchlist · '+i.cohorts.found+' found · '+i.cohorts.early+' early)',
+    'Ledger: '+i.ledgerTotal+' protocols in '+i.groups+' groups',
+    'Reconciliation: <b class="'+(i.status==='PASS'?'good':'bad')+'">'+i.status+'</b>',
+    'Snapshot: '+esc(d.snapshot.id),...i.issues.map(esc)].map(s=>'<span>'+s+'</span>').join('');
+  const c=d.validation.curve;
+  const tiles=[['FARM',counts.FARM,'Break-even ≤ 10%','good'],['THIN / SKIP',counts.THIN+' / '+counts.SKIP,'At '+usd(ticket,0)+' · 10% share','thin'],
+    ['TOTAL IMPLIED',compact(d.total),'Valuations × token presence proxy',''],['FITTED TVL CURVE',multiple(c.loo.median)+' / '+multiple(c.wf50.median),'Median miss · LOO / walk-forward','']];
+  byId('metrics').innerHTML=tiles.map(([label,val,desc,tone])=>'<div class="tile"><div class="kicker">'+label+'</div><b class="'+tone+'">'+val+'</b><p>'+desc+'</p></div>').join('');
+  byId('tabs').innerHTML=Object.entries(views).map(([name,label])=>'<button data-view="'+name+'" aria-current="'+(view===name)+'">'+label+'</button>').join('');
+  byId('content').innerHTML=view==='method'?method():view==='coverage'?coverage():view==='anchors'?anchors():listing();
+}
+
+if (d) {
+  byId('ticket').innerHTML=[500,1000,5000,10000].map(t=>'<option value="'+t+'"'+(t===ticket?' selected':'')+'>'+usd(t,0)+'</option>').join('');
+  byId('ticket').onchange=e=>{ticket=Number(e.target.value); selected='';render();};
+  document.addEventListener('click', e=>{
+    const tab=e.target.closest('[data-view]'), row=e.target.closest('[data-slug]');
+    if (tab) {view=tab.dataset.view;filter='';limit=12;render();byId('tabs').querySelector('[aria-current=true]').focus();}
+    if (row) {selected=row.dataset.slug;render();document.querySelector('.selected button')?.focus({preventScroll:true});}
+    if (e.target.id==='more') {limit+=24;render();}
+  });
+  document.addEventListener('change', e=>{if(e.target.id==='group'){group=e.target.value;limit=12;render();}});
+  document.addEventListener('input', e=>{
+    if(e.target.id!=='search') return;
+    const cursor=e.target.selectionStart;
+    filter=e.target.value;limit=12;render();
+    byId('search').focus();byId('search').setSelectionRange(cursor,cursor);
+  });
+  render();
+} else byId('content').textContent='Snapshot data unavailable. Serve the complete output directory.';

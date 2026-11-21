@@ -1,27 +1,15 @@
-# Token Radar
+# Token Radar · Round 7
 
-[![make.fun · token-radar-01](https://make.fun/badge/token-radar-01.svg)](https://make.fun/bounty/token-radar-01?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
-[![rank](https://make.fun/badge/token-radar-01/di3725605-maker/token-radar/rank.svg)](https://make.fun/bounty/token-radar-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
-[![reward](https://make.fun/badge/token-radar-01/di3725605-maker/token-radar/reward.svg)](https://make.fun/bounty/token-radar-01?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
+Token Radar accounts for every protocol in a DefiLlama snapshot and ranks pre-token candidates separately from traded anchors. The first view orders farm decisions by modeled net, with FARM decisions given priority. At the sealed $1,000 ticket and 10% share, the strongest decisions are THIN and the FARM state is empty.
 
-Token Radar builds a local dashboard from a dated DefiLlama snapshot. The coverage strip reconciles the ranked subset to the entire protocol universe, and the ledger assigns every protocol one disposition by slug.
+A robust log-log regression estimates token market cap conditional on launch. The adjustment uses observed token presence by age and a category rate shrunk toward the snapshot rate. Break-even odds determine the decision class. The Method view includes held-out errors, the cost model and a survivor sensitivity with unidentified assumptions.
 
-With Node 24, run:
+Run with Node 24:
 
 ```sh
-MAKEFUN_OUTPUT_DIR=../out6 node main.ts --input ../input/snapshot.json
+node main.ts --input ../input/snapshot.json --output ../out-r7
 ```
 
-Keep the snapshot outside this directory. Serve the output directory and open `dashboard/` to view it.
+Serve the output root with `python3 -m http.server 8765 --directory ../out-r7` and open `http://localhost:8765/dashboard/`. The dashboard reads the generated data script from its parent directory. Use `?view=valuation&pick=polymarket-international` for valuation detail or `?filter=Solana` for filtered decisions. The dossier includes captures when all three PNGs are present in the source screenshots directory.
 
-The board opens on Farm decisions at a $1,000 ticket, 10% share, and the conservative age-bucket proxy. Valuation reorders the same decisions by implied protocol value. Use Odds basis to explore the separately labeled eventual-launch scenario; that scenario assumes an eventual-launch share and has no prospective calibration in the snapshot. Method explains the comparable-token fit, holdouts, and sensitivities. Ledger lets you search by name or slug.
-
-Hash controls include `view=farm|value`, `sc=base|assumed`, `ticket`, `share`, `detail` (slug), source/category/verdict filters, and page. The adjacent detail keeps the decision table in view. Valuation rank is based on the headline odds; scenario valuation ordering is recalculated without changing the row economics.
-
-Only the TVL curve supplies fitted valuation coefficients. The base odds multiply age-bucket token presence by a shrunk category factor, with a 0.25 exponent and 5%–95% clamp. The survivor scenario fixes an assumed L and fits its shape to the same cross-section; L is not identified. Growth is 7-day snapshot change, descriptive in the shipped value formula. Brier tests token presence, not future launch.
-
-Positive modeled net means FARM. Each plan shows its charged fees, forgone yield, wallet buffer, and modeled hold separately. The buffer stays outside the net calculation. The snapshot does not verify deposits, contracts, eligibility, or announcements; plans identify these prerequisites before any funds move.
-
-The builder independently checks board shape, watchlist inclusion, real and unique slugs, value order, ages, bands, rank ranges, economics, eight trimmed plan steps, and ledger membership. It refuses to write when reconciliation fails. It also enforces curve and survivor drift limits before output and verifies serialized files afterward.
-
-The vendor library is unchanged. Its dossier extracts text only from `dashboard/`, so `evidence.json` there carries compact computed row values, the complete ledger partition, fit results, validation summaries, and the two leading FARM plans. Full runtime data stays in output `data.js`. The builder measures the full extraction text, rejects truncation, and compares its extraction byte-for-byte with the vendor dossier once screenshots exist. Without screenshots it explicitly reports the missing verification and does not create a dossier.
+Verify the normal and read-only runs, snapshot reconciliation, duplicate and missing protocol cases, extracted text cap, three fresh CDP screenshots, and output hashes.

@@ -1,60 +1,58 @@
-import {readFileSync, statSync} from 'node:fs';
+import {readFileSync} from 'node:fs';
 import {join} from 'node:path';
-import {ageDays, disposition, expectedListCounts, hasToken, rankedLabel, type BoardRow, type Ledger, type RadarData, type Snapshot} from './model.ts';
+import {cohort, sum, valueAt, launchOdds, farmEconomics, verdictCounts} from './model.ts';
 
-function requireThat(ok: unknown, problem: string): asserts ok {
-  if(!ok) throw Error(problem);
+export function reconcile(snapshot,ledger,rows) {
+  const expected = new Set(snapshot.protocols.map(p => p.slug));
+  const ranked = new Set(ledger.find(g => g.name === 'Ranked')?.members.map(p => p.slug));
+  const seen = new Set(), boardSlugs = new Set(), issues = [];
+  const counts = {watchlist:0,found:0,early:0};
+  for (const group of ledger) {
+    if (group.count !== group.members.length) issues.push('Incorrect group total for '+group.name);
+    for (const {slug} of group.members) {
+      if (!expected.has(slug) || seen.has(slug)) issues.push('Unexpected or repeated ledger slug '+slug);
+      seen.add(slug);
+    }
+  }
+  for (const slug of expected) if (!seen.has(slug)) issues.push('Missing ledger slug '+slug);
+  for (const row of rows) {
+    if (!ranked.has(row.slug) || boardSlugs.has(row.slug)) issues.push('Unexpected or repeated ranked slug '+row.slug);
+    boardSlugs.add(row.slug);
+    const segment = cohort(row,snapshot);
+    if (row.cohort !== segment) issues.push('Incorrect cohort for '+row.slug);
+    counts[segment]++;
+  }
+  for (const slug of ranked) if (!boardSlugs.has(slug)) issues.push('Missing ranked slug '+slug);
+  return {status:issues.length ? 'FAIL':'PASS',issues,coverage:seen.size,ranked:rows.length,
+    ledgerTotal:sum(ledger.map(g => g.count)),groups:ledger.length,cohorts:counts};
 }
-export function verifyBoard(s:Snapshot, rows:BoardRow[], ledger:Ledger, check:RadarData['reconciliation']) {
-  const source = new Map(s.protocols.map(p=>[p.slug,p]));
-  const seen = new Set<string>();
-  requireThat(rows.length>=100&&rows.length<=4000,'Board size outside 100–4000');
-  requireThat(check.status==='PASS'&&check.discrepancy===0&&source.size===s.protocols.length,'Reconciliation metadata or input identity failed');
-  const memberships=ledger.flatMap(g=>g.members.map(m=>[m.slug,g.label] as const));
-  const bySlug=new Map(memberships), ranked=new Set(memberships.filter(([,label])=>label===rankedLabel).map(([slug])=>slug));
-  requireThat(bySlug.size===source.size&&memberships.length===source.size&&
-    [...source.keys()].every(slug=>bySlug.has(slug))&&ledger.every(g=>g.count===g.members.length)&&
-    ranked.size===rows.length&&rows.every(r=>ranked.has(r.slug)), 'Ledger does not partition all snapshot identities');
-  requireThat(memberships.every(([slug,label])=>disposition(source.get(slug)!,ranked)===label),'Incorrect ledger disposition');
-  const expected=expectedListCounts(s), lists=['watchlist','found','early'] as const;
-  const counts=lists.map(list=>rows.filter(r=>r.list===list).length);
-  requireThat(check.universe===source.size&&check.ledger_total===memberships.length&&check.ledger_groups===ledger.length&&
-    check.ranked===rows.length&&check.exclusions_total===source.size-rows.length&&
-    counts.reduce((n,count)=>n+count,0)===rows.length&&
-    lists.every((list,i)=>counts[i]===expected[list]),'Coverage counters do not match the board and ledger');
-  requireThat(rows.some(r=>r.tvl_usd<s.floor_usd),'Missing early coverage');
-  rows.forEach((r,i)=>{
-    const p=source.get(r.slug);
-    requireThat(p&&!seen.has(r.slug)&&r.name.trim(), 'Invalid or repeated board identity: '+r.slug);
-    seen.add(r.slug);
-    requireThat(!hasToken(p)&&r.token_status==='pre-token'&&r.age_days===ageDays(s.as_of,p.listed_at), 'Bad status or age: '+r.slug);
-    requireThat(r.rank===i+1&&(!i||rows[i-1].implied_value_usd>=r.implied_value_usd),'Unexpected rank order');
-    const v=r.implied_value_usd, f=r.farm;
-    requireThat(Number.isInteger(v)&&v>0&&v<=1e14&&r.tvl_usd>=0&&r.value_if_launches_usd>0,'Invalid value: '+r.slug);
-    requireThat([r.odds,r.odds_survivor,r.bucket_odds].every(x=>x>=.05&&x<=.95),'Invalid odds: '+r.slug);
-    requireThat(r.band_p10_usd<=r.band_p25_usd&&r.band_p25_usd<=v&&v<=r.band_p75_usd&&r.band_p75_usd<=r.band_p90_usd,'Invalid value bands');
-    requireThat(r.rank_range_lo>=1&&r.rank_range_hi<=rows.length&&r.rank_range_lo<=r.rank_range_hi,'Invalid rank range');
-    requireThat(Number.isFinite(f.netUsd)&&Number.isFinite(f.breakEvenOdds)&&f.verdict===(f.netUsd>0?'FARM':f.breakEvenOdds<=.33?'THIN':'SKIP'),'Invalid farm decision');
-    requireThat(r.odds===r.bucket_odds&&r.odds===f.odds&&f.reserveUsd===10&&
-      Math.abs(f.feesUsd-f.nTx*f.gasUsd-f.allowanceUsd)<1e-10&&
-      Math.abs(f.sliceIfLaunchesUsd*r.odds-f.feesUsd-f.forgoneUsd-f.netUsd)<1e-10,'Headline odds or fee arithmetic differs: '+r.slug);
-    requireThat(r.nearest_comps.length&&r.farm_steps.length===8&&r.farm_steps.every(x=>x.trim().length>=20&&x.trim().length<=600),'Invalid plan or anchors: '+r.slug);
-    requireThat(r.farm_steps[0].includes('wallet buffer')&&r.farm_steps[0].includes('not deducted')&&
-      r.farm_steps[7].includes('IF a real announcement exists AND eligibility is confirmed'),'Reserve or conditional-claim disclosure missing');
+
+export function verifyBoard(board) {
+  const {curve,params,rows,integrity,total,verdicts} = board;
+  if (integrity.status !== 'PASS') throw Error(integrity.issues.join(' / '));
+  if (!(Number.isFinite(curve.A) && curve.A>0 && curve.b>0 && curve.b<1)) throw Error('Invalid curve');
+  if (sum(rows.map(row => row.implied)) !== total) throw Error('Implied total mismatch');
+  if (JSON.stringify(verdictCounts(rows.map(row => row.farms[1000]))) !== JSON.stringify(verdicts))
+    throw Error('Verdict total mismatch');
+  rows.forEach((row,i) => {
+    const value = valueAt(curve,row.tvl_usd), odds = launchOdds(params,row);
+    if (row.rank !== i+1 || (i && row.implied>rows[i-1].implied) ||
+        !Number.isFinite(row.implied) || row.value !== value || row.odds !== odds || row.implied !== value*odds)
+      throw Error('Invalid valuation for '+row.slug);
+    for (const [ticket,farm] of Object.entries(row.farms)) {
+      if (JSON.stringify(farmEconomics(row,value,odds,Number(ticket))) !== JSON.stringify(farm))
+        throw Error('Invalid farm economics for '+row.slug);
+    }
   });
-  requireThat(s.watchlist.every(slug=>seen.has(slug)), 'Missing watchlist protocol');
 }
-export function verifyWritten(out:string,rows:BoardRow[],dossier:boolean) {
-  const doc=JSON.parse(readFileSync(join(out,'board.json'),'utf8'));
-  requireThat(JSON.stringify(doc.rows)===JSON.stringify(rows),'Written board differs');
-  const data=readFileSync(join(out,'data.js'),'utf8'), prefix='window.RADAR=';
-  requireThat(data.startsWith(prefix)&&data.length>=100,'Dashboard payload missing');
-  const radar:RadarData=JSON.parse(data.slice(prefix.length).trim().slice(0,-1));
-  requireThat(radar.model_version==='radar-6'&&radar.validation&&radar.reconciliation.status==='PASS','Invalid dashboard metadata');
-  if(dossier) {
-    const path=join(out,'dossier.json');
-    requireThat(statSync(path).size<=1572864,'Dossier image envelope exceeds byte cap');
-    const {text}=JSON.parse(readFileSync(path,'utf8'));
-    requireThat(Buffer.byteLength(text)<=65536,'Dossier text exceeds cap');
+
+export function verifyWritten(out, expected, script, dossier) {
+  const read = name => readFileSync(join(out,name));
+  if (read('board.json').toString() !== expected || read('data.js').toString() !== script) throw Error('Board staging mismatch');
+  const text = read('judge-visible-text.txt');
+  if (text.length > 65536 || text.toString() !== dossier.text) throw Error('Judge text mismatch or over cap');
+  for (const image of dossier.images) {
+    if (!read('screenshots/'+image.name).equals(Buffer.from(image.base64,'base64')))
+      throw Error('Unmatched screenshot '+image.name);
   }
 }
