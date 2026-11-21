@@ -1,6 +1,6 @@
 import {readFileSync, statSync} from 'node:fs';
 import {join} from 'node:path';
-import {ageDays, disposition, hasToken, rankedLabel, type BoardRow, type Ledger, type RadarData, type Snapshot} from './model.ts';
+import {ageDays, disposition, expectedListCounts, hasToken, rankedLabel, type BoardRow, type Ledger, type RadarData, type Snapshot} from './model.ts';
 
 function requireThat(ok: unknown, problem: string): asserts ok {
   if(!ok) throw Error(problem);
@@ -16,9 +16,12 @@ export function verifyBoard(s:Snapshot, rows:BoardRow[], ledger:Ledger, check:Ra
     [...source.keys()].every(slug=>bySlug.has(slug))&&ledger.every(g=>g.count===g.members.length)&&
     ranked.size===rows.length&&rows.every(r=>ranked.has(r.slug)), 'Ledger does not partition all snapshot identities');
   requireThat(memberships.every(([slug,label])=>disposition(source.get(slug)!,ranked)===label),'Incorrect ledger disposition');
+  const expected=expectedListCounts(s), lists=['watchlist','found','early'] as const;
+  const counts=lists.map(list=>rows.filter(r=>r.list===list).length);
   requireThat(check.universe===source.size&&check.ledger_total===memberships.length&&check.ledger_groups===ledger.length&&
-    check.ranked===rows.length&&check.exclusions_total===source.size-rows.length&&rows.length===198&&
-    (['watchlist','found','early'] as const).every((list,i)=>rows.filter(r=>r.list===list).length===[40,20,138][i]),'Coverage counters do not match the board and ledger');
+    check.ranked===rows.length&&check.exclusions_total===source.size-rows.length&&
+    counts.reduce((n,count)=>n+count,0)===rows.length&&
+    lists.every((list,i)=>counts[i]===expected[list]),'Coverage counters do not match the board and ledger');
   requireThat(rows.some(r=>r.tvl_usd<s.floor_usd),'Missing early coverage');
   rows.forEach((r,i)=>{
     const p=source.get(r.slug);

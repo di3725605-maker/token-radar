@@ -209,6 +209,11 @@ export function buildLedger(s: Snapshot, board: BoardRow[]) {
   return [...groups].map(([label,members])=>({label,count:members.length,members}));
 }
 export type Ledger = ReturnType<typeof buildLedger>;
+export function expectedListCounts(s: Snapshot): Record<List,number> {
+  const counts:Record<List,number>={watchlist:0,found:0,early:0};
+  for(const {list} of selectRows(s)) counts[list]++;
+  return counts;
+}
 export function reconcile(s: Snapshot, board: BoardRow[], ledger: Ledger) {
   const expected=new Map(s.protocols.map(p=>[p.slug,p])), ranked=new Set(board.map(r=>r.slug));
   const seen=new Map<string,number>();
@@ -225,8 +230,9 @@ export function reconcile(s: Snapshot, board: BoardRow[], ledger: Ledger) {
   for(const slug of ranked) if(!expected.has(slug)) errors++;
   const ledger_total=ledger.reduce((n,g)=>n+g.count,0), universe=s.protocols.length;
   const exclusions_total=ledger.filter(g=>g.label!==rankedLabel).reduce((n,g)=>n+g.count,0);
-  const discrepancy=errors+Math.abs(ledger_total-universe)+Math.abs(board.length-198)+
-    (['watchlist','found','early'] as const).reduce((n,list,i)=>n+Math.abs(board.filter(r=>r.list===list).length-[40,20,138][i]),0);
+  const counts=expectedListCounts(s), expectedRanked=counts.watchlist+counts.found+counts.early;
+  const discrepancy=errors+Math.abs(ledger_total-universe)+Math.abs(board.length-expectedRanked)+
+    (['watchlist','found','early'] as const).reduce((n,list)=>n+Math.abs(board.filter(r=>r.list===list).length-counts[list]),0);
   return {universe,ranked:board.length,ledger_total,ledger_groups:ledger.length,exclusions_total,
     status:(discrepancy===0?'PASS':'FAIL') as 'PASS'|'FAIL',discrepancy};
 }

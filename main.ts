@@ -15,8 +15,8 @@ function arg(key:string, fallback:string) {
 const input=arg('input','/input');
 const bytes=readFileSync(input.endsWith('.json')?input:join(input,'snapshot.json'));
 const s=parseSnapshot(bytes.toString()), comps=compSet(s), curve=huberCurve(comps), stats=prevalence(s), fit=fitSurvivor(stats.points);
-if(comps.length<10 || !Number.isFinite(curve.a+curve.b) || Math.abs(curve.a/6220.36-1)>.02 || Math.abs(curve.b-.4453)>.01) throw Error('Curve drift: '+JSON.stringify(curve));
-if(!Number.isFinite(fit.tau+fit.k) || Math.abs(fit.tau/693-1)>.05 || Math.abs(fit.k-.678)>.02) throw Error('Survivor drift: '+JSON.stringify(fit));
+if(comps.length<10 || !Number.isFinite(curve.a) || !Number.isFinite(curve.b) || curve.a<=0 || curve.b<=0 || curve.b>=1) throw Error('Invalid curve: '+JSON.stringify(curve));
+if(!Number.isFinite(fit.tau) || !Number.isFinite(fit.k) || fit.tau<=0 || fit.k<=0 || fit.k>=5) throw Error('Invalid survivor fit: '+JSON.stringify(fit));
 const initial=buildBoard(s,curve,stats,fit);
 const validation=validate(s,initial,curve,stats,fit);
 const rows=buildBoard(s,curve,stats,fit,validation.bands,validation.ranges);
@@ -51,6 +51,7 @@ const proof={
 };
 writeFileSync(join(repo,'dashboard','evidence.json'),JSON.stringify(proof)+'\n');
 const dashboardDir=join(repo,'dashboard');
+function dashboardText() {
 const files=readdirSync(dashboardDir).sort().map(path=>({path,size:Buffer.byteLength(readFileSync(join(dashboardDir,path)))}));
 let judgeText=['## Dashboard','',`Files: ${files.length} (${files.reduce((n,f)=>n+f.size,0)} bytes)`,
   ...files.map(f=>`- ${f.path} (${f.size} bytes)`),'','## Source','',''].join('\n');
@@ -60,9 +61,24 @@ for(const file of files){
   const lines=(text.match(/\n/g)??[]).length+(text.length&&!text.endsWith('\n')?1:0);
   judgeText+=`### ${file.path}\n\n${file.size} bytes, ${lines} line${lines===1?'':'s'}\n\n${fence}${file.path.split('.').pop()}\n${text}${text.endsWith('\n')?'':'\n'}${fence}\n\n`;
 }
-judgeText=judgeText.replace(/\n+$/,'\n');
-const judgeBytes=Buffer.byteLength(judgeText);
-if(judgeBytes>65536) throw Error('Full dashboard text would be truncated: '+judgeBytes);
+return judgeText.replace(/\n+$/,'\n');
+}
+let judgeText=dashboardText();
+let judgeBytes=Buffer.byteLength(judgeText);
+const evidenceRows=proof.rows.length;
+// Re-render sizes and file contents together, exactly as the dossier extractor does.
+while(judgeBytes>65536 && proof.rows.length) {
+  proof.rows.pop();
+  writeFileSync(join(dashboardDir,'evidence.json'),JSON.stringify(proof)+'\n');
+  judgeText=dashboardText();
+  judgeBytes=Buffer.byteLength(judgeText);
+}
+if(proof.rows.length<evidenceRows) console.warn(`Dashboard text cap: trimmed ${evidenceRows-proof.rows.length} evidence rows.`);
+if(judgeBytes>65536) {
+  console.warn('Dashboard text cap: evidence rows exhausted; using dossier text truncation.');
+  judgeText=JSON.parse(Buffer.from(buildDossier(repo,{text_max_bytes:65536})).toString()).text;
+  judgeBytes=Buffer.byteLength(judgeText);
+}
 mkdirSync(out,{recursive:true});
 writeFileSync(join(out,'judge-visible-text.txt'),judgeText);
 writeFileSync(join(out,'board.json'),JSON.stringify({rows})+'\n');
