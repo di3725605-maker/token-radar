@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import {cpSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync} from 'node:fs';
+import {existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {buildBoard, buildLedger, compSet, fitSurvivor, huberCurve, MODEL_VERSION, parseSnapshot, prevalence, reconcile, trades, type RadarData} from './lib/model.ts';
@@ -32,6 +32,19 @@ const data:RadarData={
   validation:{...validation.summary,bands:validation.bands}
 };
 const out=arg('output',process.env.MAKEFUN_OUTPUT_DIR??'/output');
+const dashboardDir=join(out,'dashboard');
+mkdirSync(dashboardDir,{recursive:true});
+if(existsSync(join(repo,'dashboard'))) {
+  for(const file of readdirSync(join(repo,'dashboard'))) {
+    writeFileSync(join(dashboardDir,file),readFileSync(join(repo,'dashboard',file)));
+  }
+}
+const shots=readdirSync(join(repo,'screenshots'));
+if(shots.length) {
+  if(shots.length<3 || shots.some(x=>!/^[\w][\w.-]{0,127}$/.test(x))) throw Error('Expected at least three valid screenshot names');
+  mkdirSync(join(out,'screenshots'),{recursive:true});
+  for(const shot of shots) writeFileSync(join(out,'screenshots',shot),readFileSync(join(repo,'screenshots',shot)));
+}
 // Only dashboard text is extracted by the kit. Include compact computed evidence there.
 const round=(n:number,d=2)=>+n.toFixed(d);
 const proof={
@@ -49,8 +62,7 @@ const proof={
   promoted_plans:rows.filter(r=>r.farm.verdict==='FARM').slice().sort((a,b)=>b.farm.netUsd-a.farm.netUsd).slice(0,2)
     .map(r=>({slug:r.slug,fees:r.farm.feesUsd,reserve:r.farm.reserveUsd,steps:r.farm_steps}))
 };
-writeFileSync(join(repo,'dashboard','evidence.json'),JSON.stringify(proof)+'\n');
-const dashboardDir=join(repo,'dashboard');
+writeFileSync(join(dashboardDir,'evidence.json'),JSON.stringify(proof)+'\n');
 function dashboardText() {
 const files=readdirSync(dashboardDir).sort().map(path=>({path,size:Buffer.byteLength(readFileSync(join(dashboardDir,path)))}));
 let judgeText=['## Dashboard','',`Files: ${files.length} (${files.reduce((n,f)=>n+f.size,0)} bytes)`,
@@ -76,18 +88,13 @@ while(judgeBytes>65536 && proof.rows.length) {
 if(proof.rows.length<evidenceRows) console.warn(`Dashboard text cap: trimmed ${evidenceRows-proof.rows.length} evidence rows.`);
 if(judgeBytes>65536) {
   console.warn('Dashboard text cap: evidence rows exhausted; using dossier text truncation.');
-  judgeText=JSON.parse(Buffer.from(buildDossier(repo,{text_max_bytes:65536})).toString()).text;
+  judgeText=JSON.parse(Buffer.from(buildDossier(out,{text_max_bytes:65536})).toString()).text;
   judgeBytes=Buffer.byteLength(judgeText);
 }
-mkdirSync(out,{recursive:true});
 writeFileSync(join(out,'judge-visible-text.txt'),judgeText);
 writeFileSync(join(out,'board.json'),JSON.stringify({rows})+'\n');
 writeFileSync(join(out,'data.js'),'window.RADAR='+JSON.stringify(data)+';\n');
-if(existsSync(join(repo,'dashboard'))) cpSync(join(repo,'dashboard'),join(out,'dashboard'),{recursive:true});
-const shots=readdirSync(join(repo,'screenshots'));
 if(shots.length) {
-  if(shots.length<3 || shots.some(x=>!/^[\w][\w.-]{0,127}$/.test(x))) throw Error('Expected at least three valid screenshot names');
-  cpSync(join(repo,'screenshots'),join(out,'screenshots'),{recursive:true});
   writeFileSync(join(out,'dossier.json'),buildDossier(out,{text_max_bytes:65536,screenshots:{max:4,max_bytes:524288},dashboard:{max_files:400,max_bytes:4194304}}));
   const actual=JSON.parse(readFileSync(join(out,'dossier.json'),'utf8'));
   if(actual.text!==judgeText) throw Error('Independent text extraction differs from vendor dossier');

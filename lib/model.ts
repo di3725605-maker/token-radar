@@ -12,6 +12,13 @@ export function parseSnapshot(raw: string): Snapshot {
   const s = JSON.parse(raw);
   if (!s || !Number.isFinite(Date.parse(s.as_of)) || !(s.floor_usd > 0) ||
       !Array.isArray(s.protocols) || !Array.isArray(s.watchlist) || !s.watchlist.length) throw Error('Invalid snapshot envelope');
+  const seenSlugs = new Set<string>();
+  s.protocols = s.protocols.filter(p => {
+    if (seenSlugs.has(p?.slug)) return false;
+    seenSlugs.add(p?.slug);
+    return true;
+  });
+  s.watchlist = [...new Set(s.watchlist)];
   for (const p of s.protocols) {
     if (!p?.slug?.trim() || !p.name?.trim() || !Number.isFinite(p.tvl_usd) || p.tvl_usd < 0) throw Error('Invalid protocol record');
     p.chains = Array.isArray(p.chains) ? p.chains.filter(x => typeof x === 'string') : [];
