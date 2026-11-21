@@ -136,14 +136,39 @@ export const cohort = (p,snapshot) => snapshot.watchlist.includes(p.slug) ? 'wat
 export const verdictCounts = farms => Object.fromEntries(['FARM','THIN','SKIP'].map(v =>
   [v,farms.filter(f => f.verdict === v).length]));
 
+const money = n => '$' + Number(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+const whole = n => Math.round(n).toLocaleString('en-US');
+export function farmSteps(p, f, snapshot) {
+  const chain = f.chain;
+  const minutes = Math.max(1, Math.round(f.hours * 60));
+  const listed = p.listed_at ? 'listed ' + p.listed_at : 'listing date unknown in the snapshot';
+  const asOf = snapshot.as_of ?? 'snapshot date unknown';
+  return [
+    'Budget ' + money(f.ticket) + ' principal plus ' + money(f.fees) + ' charged fees plus ' +
+      money(f.buffer) + ' wallet buffer on ' + chain + '. The buffer stays in the wallet as a reserve and is never counted as a charged cost.',
+    'Evidence: ' + p.name + ' (' + (p.category ?? 'uncategorised') + '), ' + whole(p.tvl_usd) + ' USD TVL on ' + asOf + ', ' + listed +
+      '. The snapshot records no deposit asset or contract address for this protocol.',
+    'Before funding, independently verify the deposit asset, the contract, the approval spender and the withdrawal route on ' + chain +
+      '. If any of them cannot be verified, stop and keep the ticket undeployed; if verified, cap the approval at the ticket size.',
+    'Check the wallet and the intended activity against the published eligibility rules before any deposit. Eligibility and any allocation are unknown in the snapshot; skip the plan if eligibility is required and cannot be confirmed.',
+    'Budget ' + minutes + ' minutes of active work spread over a ' + f.hold + '-day modeled hold. The snapshot supplies no required hold length and no verified qualifying action for ' + p.name + '.',
+    'Check position balances and exit liquidity weekly for ' + f.weeks + ' weeks; submit a transaction only when one is needed. The model charges ' +
+      f.transactions + ' x ' + money(f.gasPerTx) + ' gas plus $1.50 allowance = ' + money(f.fees) + ' in fees.',
+    'Withdraw the principal after ' + f.hold + ' days through the verified route, or earlier if withdrawal access or the position changes materially. Confirm the returned balance and revoke any remaining approval.',
+    'No airdrop announcement for ' + p.name + ' is recorded in the snapshot. Claim only if a real announcement exists AND eligibility is confirmed; otherwise there is no claim step.'
+  ];
+}
+
 export function buildBoard(snapshot, curve, params, ledger) {
   const ranked = new Set(ledger.find(group => group.name === 'Ranked')?.members.map(p => p.slug));
   return snapshot.protocols.filter(p => ranked.has(p.slug)).map(p => {
     const value = valueAt(curve,p.tvl_usd), odds = launchOdds(params,p);
-    return {...p, cohort:cohort(p,snapshot), value, odds, implied:value*odds,
+    const implied = value*odds;
+    const farms = Object.fromEntries([500,1000,5000,10000].map(t => [t, farmEconomics(p,value,odds,t)]));
+    return {...p, cohort:cohort(p,snapshot), value, odds, implied,
+      implied_value_usd:Math.round(implied), farm_steps:farmSteps(p,farms[1000],snapshot),
       bucketRate:p.age === null ? params.overall : params.buckets[bucket(p.age)].rate,
-      categoryRate:params.categories[p.category]?.rate ?? params.overall,
-      farms:Object.fromEntries([500,1000,5000,10000].map(t => [t, farmEconomics(p,value,odds,t)]))};
+      categoryRate:params.categories[p.category]?.rate ?? params.overall, farms};
   }).sort((a,b) => b.implied-a.implied || a.slug.localeCompare(b.slug))
     .map((p,i) => ({...p,rank:i+1}));
 }

@@ -95,16 +95,16 @@ const evidence = {
   integrity:'Coverage: '+integrity.coverage+' protocols accounted for | Ranked: '+integrity.ranked+
     ' ('+integrity.cohorts.watchlist+' watchlist · '+integrity.cohorts.found+' found · '+integrity.cohorts.early+' early) | Ledger: '+
     integrity.ledgerTotal+' protocols in '+integrity.groups+' groups | Reconciliation: '+integrity.status+' | Snapshot: '+board.snapshot.id,
-  snapshot:{...board.snapshot,rawSha256:sha(sourceBytes)},model:MODEL_VERSION,
+  snapshot:{asOf:board.snapshot.asOf,id:board.snapshot.id,floor:board.snapshot.floor,rawSha256:sha(sourceBytes)},model:MODEL_VERSION,
   decision:verdicts.FARM ? 'FARM plans qualify' : 'No FARM plans under current assumptions',
   verdicts,total,curve,validation:{curve:c,baseline:validation.baseline,ablation,splitHalf:validation.splitHalf},
   proxy:'Age bucket token presence × (K=5 shrunk category rate / overall rate)^0.25, clamped to 5–95%. A cross-sectional proxy.',
   survivorInvestigation:{label:'Unidentified assumption; excluded from production valuation and odds',rows:validation.survivor},
   ledger:ledger.map(({name,count}) => ({name,count})),
   valuationLeaders:rows.slice(0,10).map(({rank,name,cohort,tvl_usd,value,odds,implied}) => ({rank,name,cohort,tvl_usd,value,odds,implied})),
-  decisions:farmOrder.slice(0,12).map(({name,slug,rank,odds,farms}) => ({name,slug,rank,odds,...farms[1000],
+  decisions:farmOrder.slice(0,12).map(({name,slug,rank,odds,farms,farm_steps}) => ({name,slug,rank,odds,...farms[1000],farm_steps,
     lowerShareNet:farms[1000].expectedSlice/2-farms[1000].fees-farms[1000].forgone,
-    plan:plans[slug]??null,eligibility:'unverified',evidenceDate:snapshot.as_of,evidence:'https://defillama.com/protocol/'+encodeURIComponent(slug)}))
+    plan:plans[slug]??null,eligibility:'unverified',evidenceDate:snapshot.as_of,evidence:'DefiLlama snapshot '+snapshot.as_of+' · protocol '+slug}))
 };
 const cap = 65536;
 // Rebuild the full evidence in staging before checking the vendor extraction.

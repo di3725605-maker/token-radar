@@ -39,6 +39,12 @@ export function verifyBoard(board) {
     if (row.rank !== i+1 || (i && row.implied>rows[i-1].implied) ||
         !Number.isFinite(row.implied) || row.value !== value || row.odds !== odds || row.implied !== value*odds)
       throw Error('Invalid valuation for '+row.slug);
+    if (!Number.isInteger(row.implied_value_usd) || row.implied_value_usd <= 0 ||
+        row.implied_value_usd > 100000000000000 || row.implied_value_usd !== Math.round(row.implied))
+      throw Error('Invalid implied_value_usd for '+row.slug);
+    if (!Array.isArray(row.farm_steps) || row.farm_steps.length < 3 || row.farm_steps.length > 12 ||
+        row.farm_steps.some(step => typeof step !== 'string' || step.trim().length < 20 || step.trim().length > 600))
+      throw Error('Invalid farm_steps for '+row.slug);
     for (const [ticket,farm] of Object.entries(row.farms)) {
       if (JSON.stringify(farmEconomics(row,value,odds,Number(ticket))) !== JSON.stringify(farm))
         throw Error('Invalid farm economics for '+row.slug);

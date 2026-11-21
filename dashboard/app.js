@@ -40,7 +40,8 @@ function detail(p) {
     '<div class="pad"><h3>Execution checks</h3><ol class="steps"><li>'+esc(instructions.action)+'</li>'+
     '<li>Budget '+usd(f.fees)+' in modeled charges and keep '+usd(f.buffer)+' in the wallet as reserve. Confirm eligibility, supported network and live quotes before funding.</li>'+
     '<li>Check weekly. Claim only after an official announcement and confirmed eligibility. '+esc(instructions.exit)+'</li></ol>'+
-    '<p><a href="https://defillama.com/protocol/'+encodeURIComponent(p.slug)+'">DefiLlama snapshot evidence</a> · '+esc(d.snapshot.asOf)+' · Eligibility unverified</p>'+
+    '<h3>Farm steps · '+usd(ticket,0)+' ticket</h3><ol class="steps">'+(p.farm_steps??[]).map(step=>'<li>'+esc(step)+'</li>').join('')+'</ol>'+
+    '<p>DefiLlama snapshot evidence · '+esc(d.snapshot.asOf)+' · Eligibility unverified</p>'+
     '<hr><p>TVL '+compact(p.tvl_usd)+' · Launch value '+compact(p.value)+' · Proxy '+pct(p.odds)+' ('+pct(p.bucketRate)+' age bucket, '+pct(p.categoryRate)+' shrunk category)</p>'+
     '<p>Implied '+compact(p.implied)+(bands.middle80?' · 80% valuation error band '+compact(p.implied/bands.middle80)+'–'+compact(p.implied*bands.middle80):'')+(range?' · Refit ranks '+range.p10+'–'+range.p90:'')+'</p></div></aside>';
 }
