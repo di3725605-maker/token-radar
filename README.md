@@ -1,6 +1,10 @@
 # Token Radar · Round 7
 
-Token Radar accounts for every protocol in a DefiLlama snapshot and ranks pre-token candidates separately from traded anchors. The first view orders farm decisions by modeled net, with FARM decisions given priority. At the sealed $1,000 ticket and 10% share, the strongest decisions are THIN and the FARM state is empty.
+[![make.fun · token-radar-01](https://make.fun/badge/token-radar-01.svg)](https://make.fun/bounty/token-radar-01?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
+[![rank](https://make.fun/badge/token-radar-01/di3725605-maker/token-radar/rank.svg)](https://make.fun/bounty/token-radar-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
+[![reward](https://make.fun/badge/token-radar-01/di3725605-maker/token-radar/reward.svg)](https://make.fun/bounty/token-radar-01?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
+
+Token Radar accounts for every protocol in a DefiLlama snapshot and ranks pre-token candidates separately from traded anchors. Built for the [token-radar-01 bounty](https://make.fun/bounty/token-radar-01) on make.fun. The first view orders farm decisions by modeled net, with FARM decisions given priority. At the sealed $1,000 ticket and 10% share, the strongest decisions are THIN and the FARM state is empty.
 
 A robust log-log regression estimates token market cap conditional on launch. The adjustment uses observed token presence by age and a category rate shrunk toward the snapshot rate. Break-even odds determine the decision class. The Method view includes held-out errors, the cost model and a survivor sensitivity with unidentified assumptions.
 
