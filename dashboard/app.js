@@ -66,7 +66,7 @@ function listing() {
   });
   return '<div class="workspace"><section class="panel"><div class="pad"><div class="panel-head"><div><h2>'+views[view]+'</h2><p>'+
     (farm?'Expected net within priority groups':'Implied value descending · bucket proxy')+'</p></div><div class="controls"><input id="search" aria-label="Filter by protocol, chain or category" placeholder="Filter protocols" value="'+esc(filter)+'"></div></div>'+
-    (noFarm?'<div class="empty"><strong>No FARM plans under current assumptions</strong><p>Strongest remaining decisions shown below. FARM requires break-even odds ≤ 10%.</p></div>':'')+'</div>'+
+    (noFarm?'<div class="empty"><strong>No FARM plans under current assumptions</strong><p>Strongest remaining decisions shown below. FARM requires break-even ≤ 25% with positive expected net; rows within ±10% of a cutoff are held at THIN.</p></div>':'')+'</div>'+
     table(farm?['Protocol','Proxy','Break-even','Fees','Exp. net','Verdict']:['Protocol','TVL','7d','Age','Implied','Verdict'],dataRows,'board')+
     '<div class="pad panel-head"><p>'+Math.min(rows.length,limit)+' of '+rows.length+' matching protocols</p>'+(limit<rows.length?'<button id="more">Show more</button>':'')+'</div></section>'+detail(pick)+'</div>';
 }
@@ -86,8 +86,10 @@ function method() {
     table(['Fixed L','τ (days)','Shape k','Weighted SSE','Hypothetical total','Hypothetical first','Polymarket rank','Net > $0'],v.survivor.map(s=>line([pct(s.L),s.tau.toFixed(0),s.k.toFixed(3),s.sse.toFixed(3),compact(s.total),esc(s.top),s.polymarketRank||'—',s.positiveNet])))+'</article>'+
     '<article class="panel"><h2>Farm cost conventions</h2><p>Hold 60 days at age &lt;180 days, otherwise 90 days. Unknown age = 365 days for economics. Weeks = floor(hold / 7). Time share = hold / (age/2 + hold). Slice if launch = share × launch value × ticket / TVL × time share. Base allocation share 10%, lower scenario 5%.</p>'+
     '<p>Charged fees = (5 + weeks) × estimated first-chain gas USD + $1.50 allowance. Five transactions budget fund, approval, deposit, conditional claim and exit. $10 wallet buffer stays outside net. Forgone yield = 4% annual × ticket × hold / 365. Net = bucket odds × slice − fees − forgone yield. Active hours = (50 + 10 × weeks) / 60. Net/hour = net / active hours.</p>'+
-    '<p>Break-even odds = (charged fees + forgone yield) / slice. FARM ≤10%, THIN above 10% through 33%, SKIP above 33%. Implied valuation and expected farming net are distinct.</p>'+
-    table(['Ticket','FARM','THIN','SKIP'],v.tickets.map(t=>line([usd(t.ticket,0),t.FARM,t.THIN,t.SKIP])))+'</article></div>';
+    '<p>Break-even odds = (charged fees + forgone yield) / slice. FARM ≤25% with positive expected net, THIN above 25% through 33%, SKIP above 33%. Implied valuation and expected farming net are distinct.</p>'+
+    table(['Ticket','FARM','THIN','SKIP'],v.tickets.map(t=>line([usd(t.ticket,0),t.FARM,t.THIN,t.SKIP])))+'</article>'+
+    '<article class="panel"><h2>Calibration anchors · round 8</h2><p>One score, two frozen cutoffs, one borderline band — the same rule for every row and every ticket. Score = break-even odds at the modeled ticket. FARM needs break-even ≤ 0.25 AND expected net above $0. THIN is break-even ≤ 0.33 or inside a band. SKIP is break-even above 0.33 outside the band. Any score within ±10% of a cutoff is held at THIN, so a small refit wobble can never flip a row directly between FARM and SKIP.</p>'+
+    '<p>The rule is frozen since round 8. Rounds 5–7 each used a different ad-hoc rule and the FARM count swung 47 → 15 → 0 while model numbers barely moved. Freezing the boundary is the round-8 fix; the cutoffs live in CALIBRATION in lib/model.ts and the next round reuses them unchanged.</p></article></div>';
 }
 
 function anchors() {
@@ -119,7 +121,7 @@ function render() {
     'Reconciliation: <b class="'+(i.status==='PASS'?'good':'bad')+'">'+i.status+'</b>',
     'Snapshot: '+esc(d.snapshot.id),...i.issues.map(esc)].map(s=>'<span>'+s+'</span>').join('');
   const c=d.validation.curve;
-  const tiles=[['FARM',counts.FARM,'Break-even ≤ 10%','good'],['THIN / SKIP',counts.THIN+' / '+counts.SKIP,'At '+usd(ticket,0)+' · 10% share','thin'],
+  const tiles=[['FARM',counts.FARM,'Break-even ≤ 25% + positive net','good'],['THIN / SKIP',counts.THIN+' / '+counts.SKIP,'At '+usd(ticket,0)+' · 10% share','thin'],
     ['TOTAL IMPLIED',compact(d.total),'Valuations × token presence proxy',''],['FITTED TVL CURVE',multiple(c.loo.median)+' / '+multiple(c.wf50.median),'Median miss · LOO / walk-forward','']];
   byId('metrics').innerHTML=tiles.map(([label,val,desc,tone])=>'<div class="tile"><div class="kicker">'+label+'</div><b class="'+tone+'">'+val+'</b><p>'+desc+'</p></div>').join('');
   byId('tabs').innerHTML=Object.entries(views).map(([name,label])=>'<button data-view="'+name+'" aria-current="'+(view===name)+'">'+label+'</button>').join('');
